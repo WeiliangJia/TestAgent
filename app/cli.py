@@ -54,12 +54,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def _add_runtime_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--mode",
-        choices=["mock", "playwright", "browser_use"],
+        choices=["browser_use"],
         help="Override TEST_AGENT_EXECUTION_MODE.",
     )
     parser.add_argument(
         "--vlm",
-        choices=["mock", "openai", "anthropic", "glm"],
+        choices=["openai", "anthropic", "glm"],
         help="Override TEST_AGENT_VLM_PROVIDER.",
     )
     parser.add_argument("--vlm-model", help="Override TEST_AGENT_VLM_MODEL.")
@@ -80,6 +80,7 @@ def _serve(args: argparse.Namespace) -> int:
 
     from app.config import settings
 
+    settings.require_real_integrations()
     LOGGER.info(
         "Starting Test Agent service on http://%s:%s (mode=%s, vlm=%s/%s)",
         args.host,
@@ -105,6 +106,7 @@ def _run(args: argparse.Namespace) -> int:
     from app.core.orchestrator import Orchestrator
     from app.storage.sqlite import SQLiteStore
 
+    settings.require_real_integrations()
     target_url = args.target_url or os.getenv("TEST_AGENT_TARGET_URL")
     if not target_url:
         raise SystemExit(

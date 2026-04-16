@@ -37,9 +37,38 @@ def test_browser_use_glm_uses_openai_compatible_chat(monkeypatch, tmp_path: Path
     llm, note = client._build_browser_use_llm()
 
     assert isinstance(llm, FakeChatOpenAI)
-    assert note == "browser_use.ChatOpenAI(glm-5v-turbo)"
+    assert note == "browser_use.ChatOpenAI(glm-5.1)"
     assert FakeChatOpenAI.last_kwargs == {
-        "model": "glm-5v-turbo",
+        "model": "glm-5.1",
+        "api_key": "test-key",
+        "base_url": "https://example.test/api/paas/v4/",
+    }
+
+
+def test_browser_use_glm_falls_back_to_llm_module(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ZAI_API_KEY", "test-key")
+    monkeypatch.setenv("ZAI_BASE_URL", "https://example.test/api/paas/v4/")
+
+    class FakeChatOpenAI:
+        last_kwargs = {}
+
+        def __init__(self, **kwargs):
+            FakeChatOpenAI.last_kwargs = kwargs
+
+    fake_browser_use = types.ModuleType("browser_use")
+    fake_browser_use.__path__ = []
+    fake_llm = types.ModuleType("browser_use.llm")
+    fake_llm.ChatOpenAI = FakeChatOpenAI
+    monkeypatch.setitem(sys.modules, "browser_use", fake_browser_use)
+    monkeypatch.setitem(sys.modules, "browser_use.llm", fake_llm)
+    client = BrowserUseClient(_settings_for(tmp_path, provider="glm"))
+
+    llm, note = client._build_browser_use_llm()
+
+    assert isinstance(llm, FakeChatOpenAI)
+    assert note == "browser_use.llm.ChatOpenAI(glm-5.1)"
+    assert FakeChatOpenAI.last_kwargs == {
+        "model": "glm-5.1",
         "api_key": "test-key",
         "base_url": "https://example.test/api/paas/v4/",
     }
@@ -58,10 +87,14 @@ def _settings_for(root: Path, *, provider: str) -> Settings:
         max_project_concurrency=3,
         default_timeout_seconds=60,
         workspace_root=root,
+        prd_llm_provider="heuristic",
+        prd_llm_model="gpt-4o",
+        prd_llm_max_requirements=12,
+        prd_llm_max_chars=60000,
         browser_use_llm_provider=provider,
-        browser_use_llm_model="glm-5v-turbo",
+        browser_use_llm_model="glm-5.1",
         browser_use_max_steps=20,
-        vlm_provider="mock",
-        vlm_model="gpt-4o-mini",
+        vlm_provider="glm",
+        vlm_model="glm-5v-turbo",
         assertion_warning_threshold=0.6,
     )

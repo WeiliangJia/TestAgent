@@ -31,16 +31,15 @@ def test_glm_vlm_reports_missing_key(monkeypatch, tmp_path: Path) -> None:
     assert "ZAI_API_KEY" in verdict.visual_issues[0]
 
 
-def test_glm_vlm_reports_missing_sdk(monkeypatch, tmp_path: Path) -> None:
+def test_glm_vlm_reports_missing_openai_sdk(monkeypatch, tmp_path: Path) -> None:
     screenshot = tmp_path / "screen.png"
     screenshot.write_bytes(b"fake-png")
     monkeypatch.setenv("ZAI_API_KEY", "test-key")
-    monkeypatch.delitem(sys.modules, "zai", raising=False)
-    monkeypatch.delitem(sys.modules, "zhipuai", raising=False)
+    monkeypatch.delitem(sys.modules, "openai", raising=False)
     original_import = builtins.__import__
 
     def blocked_import(name, *args, **kwargs):
-        if name in {"zai", "zhipuai"}:
+        if name == "openai":
             raise ImportError(name)
         return original_import(name, *args, **kwargs)
 
@@ -52,10 +51,10 @@ def test_glm_vlm_reports_missing_sdk(monkeypatch, tmp_path: Path) -> None:
     )
 
     assert verdict.status == "warning"
-    assert "zai-sdk package is not installed." in verdict.visual_issues
+    assert "openai package is not installed." in verdict.visual_issues
 
 
-def test_glm_vlm_parses_sdk_response(monkeypatch, tmp_path: Path) -> None:
+def test_glm_vlm_parses_openai_sdk_response(monkeypatch, tmp_path: Path) -> None:
     screenshot = tmp_path / "screen.png"
     screenshot.write_bytes(b"fake-png")
     monkeypatch.setenv("ZAI_API_KEY", "test-key")
@@ -79,14 +78,16 @@ def test_glm_vlm_parses_sdk_response(monkeypatch, tmp_path: Path) -> None:
                 ]
             )
 
-    class FakeZhipuAiClient:
+    class FakeOpenAI:
+        last_kwargs = {}
+
         def __init__(self, **kwargs):
-            self.kwargs = kwargs
+            FakeOpenAI.last_kwargs = kwargs
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
-    fake_module = types.ModuleType("zai")
-    fake_module.ZhipuAiClient = FakeZhipuAiClient
-    monkeypatch.setitem(sys.modules, "zai", fake_module)
+    fake_module = types.ModuleType("openai")
+    fake_module.OpenAI = FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
 
     verdict = GLMVLMClient(model="glm-5v-turbo").assert_visual(
         expected="Dashboard is visible.",
@@ -95,6 +96,10 @@ def test_glm_vlm_parses_sdk_response(monkeypatch, tmp_path: Path) -> None:
 
     assert verdict.status == "passed"
     assert verdict.confidence == 0.91
+    assert FakeOpenAI.last_kwargs == {
+        "api_key": "test-key",
+        "base_url": "https://example.test/v4/",
+    }
     assert FakeCompletions.last_kwargs["model"] == "glm-5v-turbo"
     assert FakeCompletions.last_kwargs["thinking"] == {"type": "disabled"}
     content = FakeCompletions.last_kwargs["messages"][0]["content"]
@@ -118,13 +123,13 @@ def test_glm_vlm_handles_non_json_response(monkeypatch, tmp_path: Path) -> None:
                 ]
             }
 
-    class FakeZhipuAiClient:
+    class FakeOpenAI:
         def __init__(self, **kwargs):
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
-    fake_module = types.ModuleType("zai")
-    fake_module.ZhipuAiClient = FakeZhipuAiClient
-    monkeypatch.setitem(sys.modules, "zai", fake_module)
+    fake_module = types.ModuleType("openai")
+    fake_module.OpenAI = FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
 
     verdict = GLMVLMClient(model="glm-5v-turbo").assert_visual(
         expected="Dashboard is visible.",

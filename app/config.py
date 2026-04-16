@@ -60,6 +60,12 @@ class Settings:
     default_timeout_seconds: int
     workspace_root: Path
 
+    # PRD requirement extraction LLM
+    prd_llm_provider: str
+    prd_llm_model: str
+    prd_llm_max_requirements: int
+    prd_llm_max_chars: int
+
     # Browser-use driver LLM
     browser_use_llm_provider: str
     browser_use_llm_model: str
@@ -77,7 +83,7 @@ class Settings:
         return cls(
             app_name=os.getenv("TEST_AGENT_APP_NAME", "Test Agent"),
             api_key=os.getenv("TEST_AGENT_API_KEY") or None,
-            execution_mode=os.getenv("TEST_AGENT_EXECUTION_MODE", "mock").lower(),
+            execution_mode=os.getenv("TEST_AGENT_EXECUTION_MODE", "browser_use").lower(),
             sqlite_path=Path(
                 os.getenv("TEST_AGENT_SQLITE_PATH", data_dir / "test_agent.sqlite")
             ).resolve(),
@@ -93,11 +99,20 @@ class Settings:
             max_project_concurrency=int(os.getenv("TEST_AGENT_PROJECT_CONCURRENCY", "3")),
             default_timeout_seconds=int(os.getenv("TEST_AGENT_TIMEOUT_SECONDS", "60")),
             workspace_root=workspace_root,
-            browser_use_llm_provider=os.getenv("TEST_AGENT_BROWSER_USE_PROVIDER", "openai").lower(),
-            browser_use_llm_model=os.getenv("TEST_AGENT_BROWSER_USE_MODEL", "gpt-4o"),
+            prd_llm_provider=os.getenv("TEST_AGENT_PRD_PROVIDER", "glm").lower(),
+            prd_llm_model=os.getenv(
+                "TEST_AGENT_PRD_MODEL",
+                os.getenv("TEST_AGENT_BROWSER_USE_MODEL", "glm-5.1"),
+            ),
+            prd_llm_max_requirements=int(
+                os.getenv("TEST_AGENT_PRD_MAX_REQUIREMENTS", "12")
+            ),
+            prd_llm_max_chars=int(os.getenv("TEST_AGENT_PRD_MAX_CHARS", "60000")),
+            browser_use_llm_provider=os.getenv("TEST_AGENT_BROWSER_USE_PROVIDER", "glm").lower(),
+            browser_use_llm_model=os.getenv("TEST_AGENT_BROWSER_USE_MODEL", "glm-5.1"),
             browser_use_max_steps=int(os.getenv("TEST_AGENT_BROWSER_USE_MAX_STEPS", "20")),
-            vlm_provider=os.getenv("TEST_AGENT_VLM_PROVIDER", "mock").lower(),
-            vlm_model=os.getenv("TEST_AGENT_VLM_MODEL", "gpt-4o-mini"),
+            vlm_provider=os.getenv("TEST_AGENT_VLM_PROVIDER", "glm").lower(),
+            vlm_model=os.getenv("TEST_AGENT_VLM_MODEL", "glm-5v-turbo"),
             assertion_warning_threshold=float(
                 os.getenv("TEST_AGENT_ASSERTION_WARNING_THRESHOLD", "0.6")
             ),
@@ -108,6 +123,23 @@ class Settings:
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         self.report_dir.mkdir(parents=True, exist_ok=True)
+
+    def require_real_integrations(self) -> None:
+        simulated: list[str] = []
+        if self.execution_mode != "browser_use":
+            simulated.append(
+                f"TEST_AGENT_EXECUTION_MODE must be browser_use, got {self.execution_mode!r}"
+            )
+        if self.prd_llm_provider in {"", "heuristic", "mock", "rules"}:
+            simulated.append(
+                f"TEST_AGENT_PRD_PROVIDER must be a real LLM provider, got {self.prd_llm_provider!r}"
+            )
+        if self.vlm_provider in {"", "mock"}:
+            simulated.append(
+                f"TEST_AGENT_VLM_PROVIDER must be a real VLM provider, got {self.vlm_provider!r}"
+            )
+        if simulated:
+            raise ValueError("Simulation is disabled for this run: " + "; ".join(simulated))
 
 
 settings = Settings.from_env()

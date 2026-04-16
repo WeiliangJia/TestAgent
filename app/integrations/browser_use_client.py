@@ -16,6 +16,7 @@ from app.models.test_case import TestCase
 _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
+_DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4/"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,11 +35,7 @@ class BrowserExecution:
 class BrowserUseClient:
     """Browser execution facade.
 
-    Supports three modes selected by ``TEST_AGENT_EXECUTION_MODE``:
-
-    - ``mock``         — deterministic stub, no browser required.
-    - ``browser_use``  — drive the page with the ``browser-use`` LLM agent.
-    - ``playwright``   — scripted Playwright (no LLM), used for debugging.
+    Supports real browser-use execution selected by ``TEST_AGENT_EXECUTION_MODE``.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -78,49 +75,9 @@ class BrowserUseClient:
                 screenshot_path=screenshot_path,
                 credentials=credentials,
             )
-        return await self._execute_mock(
-            project_id=project_id,
-            test_id=test_id,
-            target_url=target_url,
-            test_case=test_case,
-            screenshot_path=screenshot_path,
-        )
-
-    async def _execute_mock(
-        self,
-        *,
-        project_id: str,
-        test_id: str,
-        target_url: str,
-        test_case: TestCase,
-        screenshot_path: Path,
-    ) -> BrowserExecution:
-        await asyncio.sleep(0)
-        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-        screenshot_path.write_bytes(_ONE_PIXEL_PNG)
-        LOGGER.info("Mock execution wrote screenshot %s", screenshot_path)
-        dom = "\n".join(
-            [
-                "<html>",
-                "  <head><title>Mock Test Page</title></head>",
-                "  <body>",
-                f"    <main data-project='{project_id}' data-test='{test_id}'>",
-                f"      <h1>{test_case.expected}</h1>",
-                f"      <p>{test_case.story}</p>",
-                "    </main>",
-                "  </body>",
-                "</html>",
-            ]
-        )
-        return BrowserExecution(
-            status="passed",
-            current_url=target_url,
-            screenshot_path=screenshot_path,
-            dom_snapshot=dom,
-            notes=[
-                "Executed in mock mode. Set TEST_AGENT_EXECUTION_MODE=browser_use "
-                "for the real LLM-driven browser agent."
-            ],
+        raise ValueError(
+            "Simulation is disabled: TEST_AGENT_EXECUTION_MODE must be "
+            f"'browser_use', got {self.execution_mode!r}."
         )
 
     async def _execute_with_browser_use(
@@ -370,7 +327,10 @@ class BrowserUseClient:
             api_key = _first_env("ZAI_API_KEY", "ZHIPUAI_API_KEY", "GLM_API_KEY")
             if not api_key:
                 return None, "ZAI_API_KEY/ZHIPUAI_API_KEY/GLM_API_KEY not set"
-            base_url = _first_env("ZAI_BASE_URL", "ZHIPUAI_BASE_URL", "GLM_BASE_URL")
+            base_url = (
+                _first_env("ZAI_BASE_URL", "ZHIPUAI_BASE_URL", "GLM_BASE_URL")
+                or _DEFAULT_ZAI_BASE_URL
+            )
             return _build_openai_compatible_llm(
                 model=model,
                 note_model=model,
@@ -556,7 +516,7 @@ def _build_openai_compatible_llm(
     ]:
         try:
             chat_openai = _import_symbol(import_path)
-        except ImportError:
+        except (ImportError, AttributeError):
             continue
         try:
             return chat_openai(**kwargs), f"{note_prefix}({note_model})"

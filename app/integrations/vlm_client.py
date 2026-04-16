@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
+_DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4/"
 
 
 @dataclass(slots=True)
@@ -28,9 +29,8 @@ class LayerVerdict:
 class VLMClient:
     """Layer 2 visual assertion interface.
 
-    Given an expected outcome and a screenshot path, return a verdict. Real
-    implementations call a vision-capable model; the mock returns a deterministic
-    positive verdict so the pipeline runs without any API key.
+    Given an expected outcome and a screenshot path, call a real vision-capable
+    model and return a verdict.
     """
 
     def assert_visual(
@@ -40,32 +40,14 @@ class VLMClient:
 
 
 def build_vlm_client(provider: str, model: str | None = None) -> VLMClient:
-    provider = (provider or "mock").lower()
+    provider = (provider or "glm").lower()
     if provider == "openai":
         return OpenAIVLMClient(model=model or "gpt-4o-mini")
     if provider == "anthropic":
         return AnthropicVLMClient(model=model or "claude-sonnet-4-5")
     if provider in {"glm", "zai", "zhipu", "zhipuai"}:
         return GLMVLMClient(model=model or "glm-5v-turbo")
-    return MockVLMClient()
-
-
-class MockVLMClient(VLMClient):
-    """Deterministic stand-in; used when no API key is configured."""
-
-    def assert_visual(self, *, expected: str, screenshot_path: str | None) -> LayerVerdict:
-        if not screenshot_path or not Path(screenshot_path).exists():
-            return LayerVerdict(
-                status="warning",
-                confidence=0.4,
-                visual_issues=["Screenshot missing; visual check skipped."],
-                rationale="mock:no-screenshot",
-            )
-        return LayerVerdict(
-            status="passed",
-            confidence=0.75,
-            rationale="mock:screenshot-present",
-        )
+    raise ValueError(f"Unsupported real VLM provider: {provider}")
 
 
 class OpenAIVLMClient(VLMClient):
@@ -182,10 +164,11 @@ class GLMVLMClient(VLMClient):
             LOGGER.warning("GLM visual assertion skipped because no API key is set")
             return _missing_key_response("ZAI_API_KEY/ZHIPUAI_API_KEY/GLM_API_KEY")
 
-        client_cls = _import_glm_client()
-        if client_cls is None:
-            LOGGER.warning("GLM visual assertion skipped because zai-sdk is not installed")
-            return _import_error_response("zai-sdk")
+        try:
+            from openai import OpenAI
+        except ImportError:
+            LOGGER.warning("GLM visual assertion skipped because openai is not installed")
+            return _import_error_response("openai")
 
         if not screenshot_path or not Path(screenshot_path).exists():
             return LayerVerdict(
@@ -195,18 +178,15 @@ class GLMVLMClient(VLMClient):
                 rationale="no-screenshot",
             )
 
-        base_url = _first_env("ZAI_BASE_URL", "ZHIPUAI_BASE_URL", "GLM_BASE_URL")
-        client_kwargs = {"api_key": api_key}
-        if base_url:
-            client_kwargs["base_url"] = base_url
+        base_url = _glm_base_url()
 
         try:
-            LOGGER.info("Calling GLM visual assertion model=%s screenshot=%s", self.model, screenshot_path)
-            try:
-                client = client_cls(**client_kwargs)
-            except TypeError:
-                client_kwargs.pop("base_url", None)
-                client = client_cls(**client_kwargs)
+            LOGGER.info(
+                "Calling GLM visual assertion through OpenAI-compatible API model=%s screenshot=%s",
+                self.model,
+                screenshot_path,
+            )
+            client = OpenAI(api_key=api_key, base_url=base_url)
             completion = _create_glm_completion(
                 client=client,
                 model=self.model,
@@ -292,19 +272,11 @@ def _first_env(*names: str) -> str | None:
     return None
 
 
-def _import_glm_client() -> object | None:
-    try:
-        from zai import ZhipuAiClient  # type: ignore
-
-        return ZhipuAiClient
-    except ImportError:
-        pass
-    try:
-        from zhipuai import ZhipuAI  # type: ignore
-
-        return ZhipuAI
-    except ImportError:
-        return None
+def _glm_base_url() -> str:
+    return (
+        _first_env("ZAI_BASE_URL", "ZHIPUAI_BASE_URL", "GLM_BASE_URL")
+        or _DEFAULT_ZAI_BASE_URL
+    )
 
 
 def _create_glm_completion(

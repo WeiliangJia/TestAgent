@@ -12,30 +12,35 @@ The v0.1 goal is an end-to-end runnable loop:
 6. Run a pluggable assertion engine.
 7. Return a JSON report with RTM mapping and evidence links.
 
-By default the service uses `mock` execution so the architecture can run without browser binaries or model keys. Three execution modes are supported:
+By default the service runs with real GLM-powered PRD extraction, browser-use
+planning, and visual assertions. Runtime commands reject simulated execution so
+the agent does not silently skip real browser or model calls.
 
-- `mock` (default) — deterministic stub, no browser, no API key.
 - `browser_use` — LLM-driven agent via the [`browser-use`](https://github.com/browser-use/browser-use) library.
-- `playwright` — scripted Playwright without an LLM (useful for debugging).
 
 ## Environment variables
 
 | Variable | Purpose |
 |---|---|
-| `TEST_AGENT_EXECUTION_MODE` | `mock` \| `browser_use` \| `playwright` |
+| `TEST_AGENT_EXECUTION_MODE` | `browser_use` |
 | `TEST_AGENT_PROJECT_ID` | Default project id for `test-agent run` |
 | `TEST_AGENT_TARGET_URL` | Default target URL for `test-agent run`, e.g. `http://127.0.0.1:3000` |
 | `TEST_AGENT_PRD_PATH` | Default PRD path relative to the TestAgent directory, e.g. `prd.docx` |
 | `TEST_AGENT_LOG_LEVEL` | `INFO` by default; use `DEBUG` for more terminal detail |
-| `TEST_AGENT_BROWSER_USE_PROVIDER` | `openai` \| `anthropic` \| `glm` (default `openai`) |
-| `TEST_AGENT_BROWSER_USE_MODEL` | e.g. `gpt-4o`, `claude-sonnet-4-5`, `glm-5v-turbo` |
+| `ANONYMIZED_TELEMETRY` | Set `False` to disable browser-use telemetry in local runs |
+| `TEST_AGENT_PRD_PROVIDER` | `openai` \| `glm`; use `glm` for real LLM PRD extraction |
+| `TEST_AGENT_PRD_MODEL` | e.g. `gpt-4o`, `glm-5.1` |
+| `TEST_AGENT_PRD_MAX_REQUIREMENTS` | Maximum requirements to extract from the PRD (default `12`) |
+| `TEST_AGENT_PRD_MAX_CHARS` | Maximum PRD characters sent to the LLM (default `60000`) |
+| `TEST_AGENT_BROWSER_USE_PROVIDER` | `openai` \| `anthropic` \| `glm` (default `glm`) |
+| `TEST_AGENT_BROWSER_USE_MODEL` | e.g. `gpt-4o`, `claude-sonnet-4-5`, `glm-5.1` |
 | `TEST_AGENT_BROWSER_USE_MAX_STEPS` | Agent step budget (default `20`) |
-| `TEST_AGENT_VLM_PROVIDER` | `mock` \| `openai` \| `anthropic` \| `glm` (default `mock`) |
+| `TEST_AGENT_VLM_PROVIDER` | `openai` \| `anthropic` \| `glm` (default `glm`) |
 | `TEST_AGENT_VLM_MODEL` | e.g. `gpt-4o-mini`, `claude-sonnet-4-5`, `glm-5v-turbo` |
 | `TEST_AGENT_ASSERTION_WARNING_THRESHOLD` | Confidence floor below which a passing assertion is downgraded to `warning` (default `0.6`) |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Consumed by the SDKs for both browser-use driver and VLM |
-| `ZAI_API_KEY` | Z.ai / ZhipuAI API key for GLM visual assertions |
-| `ZAI_BASE_URL` | Optional GLM-compatible API base URL, defaults to the SDK setting |
+| `ZAI_API_KEY` | Z.ai / ZhipuAI API key for GLM PRD extraction, browser-use planning, and visual assertions |
+| `ZAI_BASE_URL` | Optional GLM OpenAI-compatible API base URL, defaults to `https://api.z.ai/api/paas/v4/` |
 
 ## Run
 
@@ -92,8 +97,10 @@ pip install -e ".[browser,glm,dev]"
 playwright install chromium
 export ZAI_API_KEY=your-zai-api-key
 TEST_AGENT_EXECUTION_MODE=browser_use \
+TEST_AGENT_PRD_PROVIDER=glm \
+TEST_AGENT_PRD_MODEL=glm-5.1 \
 TEST_AGENT_BROWSER_USE_PROVIDER=glm \
-TEST_AGENT_BROWSER_USE_MODEL=glm-5v-turbo \
+TEST_AGENT_BROWSER_USE_MODEL=glm-5.1 \
 TEST_AGENT_VLM_PROVIDER=glm \
 TEST_AGENT_VLM_MODEL=glm-5v-turbo \
 test-agent run
@@ -164,8 +171,7 @@ Implemented:
 - Markdown/text/DOCX PRD loading
 - RTM and BDD generation
 - Test case generation
-- Mock browser execution
-- Optional Playwright browser execution
+- Browser-use browser execution
 - Evidence persistence
 - Heuristic visual/function assertion
 - Lightweight failure classification
