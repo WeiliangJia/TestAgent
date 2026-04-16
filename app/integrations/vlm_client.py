@@ -42,6 +42,8 @@ def build_vlm_client(provider: str, model: str | None = None) -> VLMClient:
         return OpenAIVLMClient(model=model or "gpt-4o-mini")
     if provider == "anthropic":
         return AnthropicVLMClient(model=model or "claude-sonnet-4-5")
+    if provider in {"glm", "zai", "zhipu", "zhipuai"}:
+        return GLMVLMClient(model=model or "glm-5v-turbo")
     return MockVLMClient()
 
 
@@ -167,6 +169,62 @@ class AnthropicVLMClient(VLMClient):
         return _parse_verdict(text)
 
 
+class GLMVLMClient(VLMClient):
+    def __init__(self, *, model: str) -> None:
+        self.model = model
+
+    def assert_visual(self, *, expected: str, screenshot_path: str | None) -> LayerVerdict:
+        api_key = _first_env("ZAI_API_KEY", "ZHIPUAI_API_KEY", "GLM_API_KEY")
+        if not api_key:
+            return _missing_key_response("ZAI_API_KEY/ZHIPUAI_API_KEY/GLM_API_KEY")
+
+        client_cls = _import_glm_client()
+        if client_cls is None:
+            return _import_error_response("zai-sdk")
+
+        if not screenshot_path or not Path(screenshot_path).exists():
+            return LayerVerdict(
+                status="warning",
+                confidence=0.4,
+                visual_issues=["Screenshot missing."],
+                rationale="no-screenshot",
+            )
+
+        base_url = _first_env("ZAI_BASE_URL", "ZHIPUAI_BASE_URL", "GLM_BASE_URL")
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        try:
+            try:
+                client = client_cls(**client_kwargs)
+            except TypeError:
+                client_kwargs.pop("base_url", None)
+                client = client_cls(**client_kwargs)
+            completion = _create_glm_completion(
+                client=client,
+                model=self.model,
+                expected=expected,
+                screenshot_path=screenshot_path,
+            )
+            text = _extract_completion_text(completion)
+        except Exception as exc:  # pragma: no cover - network dependent
+            return LayerVerdict(
+                status="warning",
+                confidence=0.3,
+                visual_issues=[f"VLM call failed: {type(exc).__name__}"],
+                rationale=str(exc)[:200],
+            )
+        if not text:
+            return LayerVerdict(
+                status="warning",
+                confidence=0.4,
+                visual_issues=["VLM returned an empty response."],
+                rationale="empty-response",
+            )
+        return _parse_verdict(text)
+
+
 def _build_prompt(expected: str) -> str:
     return (
         "You are a visual QA assistant verifying an E2E test screenshot.\n"
@@ -217,6 +275,83 @@ def _parse_verdict(text: str) -> LayerVerdict:
 def _encode_image(path: str) -> str:
     with open(path, "rb") as handle:
         return base64.b64encode(handle.read()).decode("ascii")
+
+
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def _import_glm_client() -> object | None:
+    try:
+        from zai import ZhipuAiClient  # type: ignore
+
+        return ZhipuAiClient
+    except ImportError:
+        pass
+    try:
+        from zhipuai import ZhipuAI  # type: ignore
+
+        return ZhipuAI
+    except ImportError:
+        return None
+
+
+def _create_glm_completion(
+    *, client: object, model: str, expected: str, screenshot_path: str
+) -> object:
+    completion_kwargs = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _build_prompt(expected)},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{_encode_image(screenshot_path)}"
+                        },
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 500,
+        "thinking": {"type": "disabled"},
+    }
+    completions = getattr(getattr(client, "chat"), "completions")
+    try:
+        return completions.create(**completion_kwargs)
+    except TypeError:
+        completion_kwargs.pop("thinking", None)
+        return completions.create(**completion_kwargs)
+
+
+def _extract_completion_text(completion: object) -> str:
+    choices = _field(completion, "choices")
+    choice = choices[0] if choices else None
+    message = _field(choice, "message") if choice is not None else None
+    content = _field(message, "content") if message is not None else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(_content_block_text(block) for block in content)
+    return str(content) if content else ""
+
+
+def _content_block_text(block: object) -> str:
+    if isinstance(block, dict):
+        return str(block.get("text") or block.get("content") or "")
+    return str(getattr(block, "text", "") or getattr(block, "content", "") or "")
+
+
+def _field(value: object, name: str) -> object:
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
 
 
 def _import_error_response(package: str) -> LayerVerdict:

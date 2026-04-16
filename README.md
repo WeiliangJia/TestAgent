@@ -26,10 +26,12 @@ By default the service uses `mock` execution so the architecture can run without
 | `TEST_AGENT_BROWSER_USE_PROVIDER` | `openai` \| `anthropic` (default `openai`) |
 | `TEST_AGENT_BROWSER_USE_MODEL` | e.g. `gpt-4o`, `claude-sonnet-4-5` |
 | `TEST_AGENT_BROWSER_USE_MAX_STEPS` | Agent step budget (default `20`) |
-| `TEST_AGENT_VLM_PROVIDER` | `mock` \| `openai` \| `anthropic` (default `mock`) |
-| `TEST_AGENT_VLM_MODEL` | e.g. `gpt-4o-mini`, `claude-sonnet-4-5` |
+| `TEST_AGENT_VLM_PROVIDER` | `mock` \| `openai` \| `anthropic` \| `glm` (default `mock`) |
+| `TEST_AGENT_VLM_MODEL` | e.g. `gpt-4o-mini`, `claude-sonnet-4-5`, `glm-5v-turbo` |
 | `TEST_AGENT_ASSERTION_WARNING_THRESHOLD` | Confidence floor below which a passing assertion is downgraded to `warning` (default `0.6`) |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Consumed by the SDKs for both browser-use driver and VLM |
+| `ZAI_API_KEY` | Z.ai / ZhipuAI API key for GLM visual assertions |
+| `ZAI_BASE_URL` | Optional GLM-compatible API base URL, defaults to the SDK setting |
 
 ## Run
 
@@ -48,6 +50,26 @@ playwright install chromium
 export OPENAI_API_KEY=sk-...
 TEST_AGENT_EXECUTION_MODE=browser_use \
 TEST_AGENT_VLM_PROVIDER=openai \
+uvicorn app.main:app --reload
+```
+
+Optional GLM-5V-Turbo visual assertion:
+
+```bash
+pip install -e ".[dev,glm]"
+export ZAI_API_KEY=your-zai-api-key
+TEST_AGENT_VLM_PROVIDER=glm \
+TEST_AGENT_VLM_MODEL=glm-5v-turbo \
+uvicorn app.main:app --reload
+```
+
+PowerShell equivalent:
+
+```powershell
+python -m pip install -e ".[dev,glm]"
+$env:ZAI_API_KEY = "your-zai-api-key"
+$env:TEST_AGENT_VLM_PROVIDER = "glm"
+$env:TEST_AGENT_VLM_MODEL = "glm-5v-turbo"
 uvicorn app.main:app --reload
 ```
 
