@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,8 @@ from app.models.test_case import TestCase
 _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -54,6 +57,12 @@ class BrowserUseClient:
         credentials: Credentials | None,
         prompt_context: str = "",
     ) -> BrowserExecution:
+        LOGGER.info(
+            "Executing %s in %s mode against %s",
+            test_case.test_case_id,
+            self.execution_mode,
+            target_url,
+        )
         if self.execution_mode == "browser_use":
             return await self._execute_with_browser_use(
                 target_url=target_url,
@@ -89,6 +98,7 @@ class BrowserUseClient:
         await asyncio.sleep(0)
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
         screenshot_path.write_bytes(_ONE_PIXEL_PNG)
+        LOGGER.info("Mock execution wrote screenshot %s", screenshot_path)
         dom = "\n".join(
             [
                 "<html>",
@@ -123,10 +133,16 @@ class BrowserUseClient:
         prompt_context: str,
     ) -> BrowserExecution:
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        LOGGER.info(
+            "Starting browser-use agent for %s with target %s",
+            test_case.test_case_id,
+            target_url,
+        )
 
         try:
             from browser_use import Agent  # type: ignore
         except ImportError:
+            LOGGER.warning("browser-use is not installed; falling back to failed execution")
             return self._fallback(
                 target_url,
                 screenshot_path,
@@ -138,6 +154,7 @@ class BrowserUseClient:
 
         llm, llm_note = self._build_browser_use_llm()
         if llm is None:
+            LOGGER.warning("browser-use LLM is unavailable: %s", llm_note)
             return self._fallback(
                 target_url, screenshot_path, notes=[llm_note or "LLM not configured."]
             )
@@ -192,9 +209,11 @@ class BrowserUseClient:
                 final_note = _history_summary(history)
                 if final_note:
                     notes.append(final_note)
+                LOGGER.info("browser-use agent completed for %s", test_case.test_case_id)
             except Exception as exc:  # pragma: no cover - network dependent
                 status = "failed"
                 notes.append(f"Agent run failed: {type(exc).__name__}: {exc}")
+                LOGGER.exception("browser-use agent failed for %s", test_case.test_case_id)
 
             page = await _session_page(session) or page
             if page is not None:
@@ -202,8 +221,10 @@ class BrowserUseClient:
                     current_url = page.url
                     dom_snapshot = await page.content()
                     await page.screenshot(path=str(screenshot_path), full_page=True)
+                    LOGGER.info("Captured browser-use screenshot %s", screenshot_path)
                 except Exception as exc:  # pragma: no cover
                     notes.append(f"Could not capture final page state: {exc}")
+                    LOGGER.warning("Could not capture browser-use final page state: %s", exc)
         finally:
             await _session_close(session)
 
@@ -237,6 +258,7 @@ class BrowserUseClient:
         try:
             from playwright.async_api import async_playwright
         except ImportError:
+            LOGGER.warning("Playwright is not installed; falling back to failed execution")
             return self._fallback(
                 target_url,
                 screenshot_path,
@@ -247,6 +269,7 @@ class BrowserUseClient:
         network_failures: list[str] = []
         notes: list[str] = []
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        LOGGER.info("Starting Playwright execution for target %s", target_url)
 
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -265,13 +288,18 @@ class BrowserUseClient:
             )
 
             try:
-                await page.goto(
+                start_url = (
                     credentials.login_url
                     if credentials and credentials.login_url
                     else target_url
                 )
+                LOGGER.info("Playwright opening %s", start_url)
+                await page.goto(
+                    start_url
+                )
                 if credentials and credentials.username and credentials.password:
                     await self._best_effort_login(page, credentials, notes)
+                    LOGGER.info("Playwright opening target after login: %s", target_url)
                     await page.goto(target_url)
                 await page.wait_for_load_state(
                     "networkidle", timeout=self.timeout_seconds * 1000
@@ -280,6 +308,11 @@ class BrowserUseClient:
                 dom_snapshot = await page.content()
                 current_url = page.url
                 status = "passed"
+                LOGGER.info(
+                    "Playwright captured %s at %s",
+                    screenshot_path,
+                    current_url,
+                )
             except Exception as exc:  # pragma: no cover
                 status = "failed"
                 current_url = page.url if page else target_url
@@ -287,6 +320,7 @@ class BrowserUseClient:
                     f"<execution-error>{type(exc).__name__}: {exc}</execution-error>"
                 )
                 notes.append(f"Browser execution failed: {type(exc).__name__}: {exc}")
+                LOGGER.exception("Playwright execution failed for target %s", target_url)
                 if not screenshot_path.exists():
                     screenshot_path.write_bytes(_ONE_PIXEL_PNG)
             finally:
@@ -309,18 +343,11 @@ class BrowserUseClient:
         if provider == "openai":
             if not os.getenv("OPENAI_API_KEY"):
                 return None, "OPENAI_API_KEY not set"
-            try:
-                from browser_use.llm import ChatOpenAI  # type: ignore
-
-                return ChatOpenAI(model=model), f"browser_use.llm.ChatOpenAI({model})"
-            except ImportError:
-                pass
-            try:
-                from langchain_openai import ChatOpenAI  # type: ignore
-
-                return ChatOpenAI(model=model), f"langchain_openai.ChatOpenAI({model})"
-            except ImportError:
-                return None, "Install browser-use or langchain-openai"
+            return _build_openai_compatible_llm(
+                model=model,
+                note_model=model,
+                import_error="Install browser-use or langchain-openai",
+            )
         if provider == "anthropic":
             if not os.getenv("ANTHROPIC_API_KEY"):
                 return None, "ANTHROPIC_API_KEY not set"
@@ -339,6 +366,18 @@ class BrowserUseClient:
                 )
             except ImportError:
                 return None, "Install browser-use or langchain-anthropic"
+        if provider in {"glm", "zai", "zhipu", "zhipuai"}:
+            api_key = _first_env("ZAI_API_KEY", "ZHIPUAI_API_KEY", "GLM_API_KEY")
+            if not api_key:
+                return None, "ZAI_API_KEY/ZHIPUAI_API_KEY/GLM_API_KEY not set"
+            base_url = _first_env("ZAI_BASE_URL", "ZHIPUAI_BASE_URL", "GLM_BASE_URL")
+            return _build_openai_compatible_llm(
+                model=model,
+                note_model=model,
+                api_key=api_key,
+                base_url=base_url,
+                import_error="Install browser-use or langchain-openai",
+            )
         return None, f"Unsupported browser_use_llm_provider: {provider}"
 
     def _build_browser_session(self) -> tuple[Any | None, str | None]:
@@ -425,6 +464,7 @@ class BrowserUseClient:
     ) -> BrowserExecution:
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
         screenshot_path.write_bytes(_ONE_PIXEL_PNG)
+        LOGGER.warning("Browser execution fallback used: %s", "; ".join(notes))
         return BrowserExecution(
             status="failed",
             current_url=target_url,
@@ -485,6 +525,52 @@ async def _session_close(session: Any) -> None:
             await result
     except Exception:  # pragma: no cover - defensive
         pass
+
+
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def _build_openai_compatible_llm(
+    *,
+    model: str,
+    note_model: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    import_error: str,
+) -> tuple[Any | None, str]:
+    kwargs: dict[str, Any] = {"model": model}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    for import_path, note_prefix in [
+        ("browser_use.ChatOpenAI", "browser_use.ChatOpenAI"),
+        ("browser_use.llm.ChatOpenAI", "browser_use.llm.ChatOpenAI"),
+        ("langchain_openai.ChatOpenAI", "langchain_openai.ChatOpenAI"),
+    ]:
+        try:
+            chat_openai = _import_symbol(import_path)
+        except ImportError:
+            continue
+        try:
+            return chat_openai(**kwargs), f"{note_prefix}({note_model})"
+        except TypeError:
+            fallback_kwargs = dict(kwargs)
+            fallback_kwargs.pop("base_url", None)
+            return chat_openai(**fallback_kwargs), f"{note_prefix}({note_model})"
+    return None, import_error
+
+
+def _import_symbol(path: str) -> Any:
+    module_name, symbol_name = path.rsplit(".", 1)
+    module = __import__(module_name, fromlist=[symbol_name])
+    return getattr(module, symbol_name)
 
 
 def _history_summary(history: Any) -> str:

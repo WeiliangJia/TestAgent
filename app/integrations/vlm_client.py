@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -176,10 +179,12 @@ class GLMVLMClient(VLMClient):
     def assert_visual(self, *, expected: str, screenshot_path: str | None) -> LayerVerdict:
         api_key = _first_env("ZAI_API_KEY", "ZHIPUAI_API_KEY", "GLM_API_KEY")
         if not api_key:
+            LOGGER.warning("GLM visual assertion skipped because no API key is set")
             return _missing_key_response("ZAI_API_KEY/ZHIPUAI_API_KEY/GLM_API_KEY")
 
         client_cls = _import_glm_client()
         if client_cls is None:
+            LOGGER.warning("GLM visual assertion skipped because zai-sdk is not installed")
             return _import_error_response("zai-sdk")
 
         if not screenshot_path or not Path(screenshot_path).exists():
@@ -196,6 +201,7 @@ class GLMVLMClient(VLMClient):
             client_kwargs["base_url"] = base_url
 
         try:
+            LOGGER.info("Calling GLM visual assertion model=%s screenshot=%s", self.model, screenshot_path)
             try:
                 client = client_cls(**client_kwargs)
             except TypeError:
@@ -209,6 +215,7 @@ class GLMVLMClient(VLMClient):
             )
             text = _extract_completion_text(completion)
         except Exception as exc:  # pragma: no cover - network dependent
+            LOGGER.exception("GLM visual assertion failed")
             return LayerVerdict(
                 status="warning",
                 confidence=0.3,

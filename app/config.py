@@ -1,8 +1,50 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def _load_env_file() -> None:
+    configured_path = os.getenv("TEST_AGENT_ENV_FILE")
+    if configured_path:
+        candidates = [Path(configured_path)]
+    else:
+        cwd = Path.cwd().resolve()
+        package_root = Path(__file__).resolve().parents[1]
+        candidates = [cwd / ".env", package_root / ".env"]
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        path = candidate.expanduser().resolve()
+        if path in seen:
+            continue
+        seen.add(path)
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key:
+                os.environ.setdefault(key, value)
+
+
+def _configure_logging() -> None:
+    level_name = os.getenv("TEST_AGENT_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+
+
+_load_env_file()
+_configure_logging()
 
 
 @dataclass(frozen=True)

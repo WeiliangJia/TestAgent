@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from app.integrations.vlm_client import build_vlm_client
 from app.memory import MemorySystem, RuntimeMemory
 from app.models.evidence import TestCaseResult
 from app.models.test_case import TestCase
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ProjectSemaphoreRegistry:
@@ -59,6 +62,13 @@ class TestRunner:
         prompt_context = self.memory.to_prompt_context(
             project_id=project_id, runtime=runtime
         )
+        LOGGER.info(
+            "Running %s test cases for project_id=%s test_id=%s target_url=%s",
+            len(test_cases),
+            project_id,
+            test_id,
+            target_url,
+        )
         tasks = [
             self._run_one(
                 semaphore=semaphore,
@@ -87,6 +97,12 @@ class TestRunner:
         prompt_context: str,
     ) -> TestCaseResult:
         async with semaphore:
+            LOGGER.info(
+                "Starting test case %s (%s) for test_id=%s",
+                test_case.test_case_id,
+                test_case.req_id,
+                test_id,
+            )
             screenshot_path = self._screenshot_path(
                 project_id, test_id, test_case.test_case_id
             )
@@ -118,6 +134,14 @@ class TestRunner:
             runtime.record(
                 f"{test_case.test_case_id}: {status} "
                 f"(conf={assertion.confidence:.2f}, failure_type={failure_type})"
+            )
+            LOGGER.info(
+                "Finished test case %s status=%s confidence=%.2f failure_type=%s screenshot=%s",
+                test_case.test_case_id,
+                status,
+                assertion.confidence,
+                failure_type,
+                execution.screenshot_path,
             )
 
             return TestCaseResult(

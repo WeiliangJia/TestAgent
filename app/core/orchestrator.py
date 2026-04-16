@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 from app.api.schemas import TestRunRequest
@@ -12,6 +13,8 @@ from app.core.test_case_generator import TestCaseGenerator
 from app.core.test_runner import ProjectSemaphoreRegistry, TestRunner
 from app.memory import MemorySystem
 from app.storage.sqlite import SQLiteStore
+
+LOGGER = logging.getLogger(__name__)
 
 
 class Orchestrator:
@@ -42,6 +45,12 @@ class Orchestrator:
             target_url=request.target_url,
             prd_content=prd_content,
         )
+        LOGGER.info(
+            "Created test run project_id=%s test_id=%s target_url=%s",
+            request.project_id,
+            test_id,
+            request.target_url,
+        )
         return test_id
 
     def run_sync_entrypoint(self, request: TestRunRequest, test_id: str) -> None:
@@ -52,11 +61,17 @@ class Orchestrator:
             project_id=request.project_id, test_id=test_id
         )
         try:
+            LOGGER.info("Starting test run project_id=%s test_id=%s", request.project_id, test_id)
             self.store.update_run(
                 project_id=request.project_id, test_id=test_id, status="running"
             )
             prd_content = self.prd_processor.load_content(
                 request.prd_content, request.prd_path
+            )
+            LOGGER.info(
+                "Loaded PRD for test_id=%s (%s characters)",
+                test_id,
+                len(prd_content),
             )
             runtime.put("target_url", request.target_url)
             runtime.put("prd_size", len(prd_content))
@@ -65,6 +80,13 @@ class Orchestrator:
             rtm = self.prd_processor.build_rtm(requirements)
             stories = self.bdd_generator.generate(requirements)
             test_cases = self.test_case_generator.generate(requirements, stories)
+            LOGGER.info(
+                "Generated %s requirements, %s stories, %s test cases for test_id=%s",
+                len(requirements),
+                len(stories),
+                len(test_cases),
+                test_id,
+            )
 
             runtime.record(
                 f"Parsed {len(requirements)} requirements → "
@@ -124,7 +146,19 @@ class Orchestrator:
                 },
                 report=report,
             )
+            LOGGER.info(
+                "Completed test run project_id=%s test_id=%s status=%s report=%s",
+                request.project_id,
+                test_id,
+                report["status"],
+                report.get("reportPath"),
+            )
         except Exception as exc:
+            LOGGER.exception(
+                "Test run failed project_id=%s test_id=%s",
+                request.project_id,
+                test_id,
+            )
             self.store.update_run(
                 project_id=request.project_id,
                 test_id=test_id,

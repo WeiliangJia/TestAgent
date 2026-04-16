@@ -23,8 +23,12 @@ By default the service uses `mock` execution so the architecture can run without
 | Variable | Purpose |
 |---|---|
 | `TEST_AGENT_EXECUTION_MODE` | `mock` \| `browser_use` \| `playwright` |
-| `TEST_AGENT_BROWSER_USE_PROVIDER` | `openai` \| `anthropic` (default `openai`) |
-| `TEST_AGENT_BROWSER_USE_MODEL` | e.g. `gpt-4o`, `claude-sonnet-4-5` |
+| `TEST_AGENT_PROJECT_ID` | Default project id for `test-agent run` |
+| `TEST_AGENT_TARGET_URL` | Default target URL for `test-agent run`, e.g. `http://127.0.0.1:3000` |
+| `TEST_AGENT_PRD_PATH` | Default PRD path relative to the TestAgent directory, e.g. `prd.docx` |
+| `TEST_AGENT_LOG_LEVEL` | `INFO` by default; use `DEBUG` for more terminal detail |
+| `TEST_AGENT_BROWSER_USE_PROVIDER` | `openai` \| `anthropic` \| `glm` (default `openai`) |
+| `TEST_AGENT_BROWSER_USE_MODEL` | e.g. `gpt-4o`, `claude-sonnet-4-5`, `glm-5v-turbo` |
 | `TEST_AGENT_BROWSER_USE_MAX_STEPS` | Agent step budget (default `20`) |
 | `TEST_AGENT_VLM_PROVIDER` | `mock` \| `openai` \| `anthropic` \| `glm` (default `mock`) |
 | `TEST_AGENT_VLM_MODEL` | e.g. `gpt-4o-mini`, `claude-sonnet-4-5`, `glm-5v-turbo` |
@@ -38,8 +42,36 @@ By default the service uses `mock` execution so the architecture can run without
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
-uvicorn app.main:app --reload
+pip install -e ".[dev,browser,glm]"
+cp .env.example .env
+```
+
+Edit `.env`, then start the API service:
+
+```bash
+python -m app.cli serve
+```
+
+Run one local PRD test without curl:
+
+```bash
+python -m app.cli run
+```
+
+After reinstalling the editable package, the shorter console script is also
+available:
+
+```bash
+test-agent serve
+test-agent run
+```
+
+Put `prd.md`, `prd.txt`, or `prd.docx` in the TestAgent directory. If
+`TEST_AGENT_PRD_PATH` is not set, `test-agent run` will look for those filenames
+automatically. Override the target URL or PRD from the terminal when needed:
+
+```bash
+test-agent run --target-url http://127.0.0.1:3000 --prd prd.docx
 ```
 
 Optional real-browser mode (browser-use agent with visual assertion):
@@ -52,6 +84,24 @@ TEST_AGENT_EXECUTION_MODE=browser_use \
 TEST_AGENT_VLM_PROVIDER=openai \
 uvicorn app.main:app --reload
 ```
+
+Optional browser-use with GLM through the Z.ai OpenAI-compatible API:
+
+```bash
+pip install -e ".[browser,glm,dev]"
+playwright install chromium
+export ZAI_API_KEY=your-zai-api-key
+TEST_AGENT_EXECUTION_MODE=browser_use \
+TEST_AGENT_BROWSER_USE_PROVIDER=glm \
+TEST_AGENT_BROWSER_USE_MODEL=glm-5v-turbo \
+TEST_AGENT_VLM_PROVIDER=glm \
+TEST_AGENT_VLM_MODEL=glm-5v-turbo \
+test-agent run
+```
+
+If GLM struggles with browser-use action planning, switch only the browser driver
+back to OpenAI/Anthropic or use `--mode playwright`. GLM can still remain as the
+visual assertion model through `TEST_AGENT_VLM_PROVIDER=glm`.
 
 Optional GLM-5V-Turbo visual assertion:
 
@@ -76,7 +126,7 @@ uvicorn app.main:app --reload
 Scripted Playwright (no LLM) fallback:
 
 ```bash
-TEST_AGENT_EXECUTION_MODE=playwright uvicorn app.main:app --reload
+test-agent run --mode playwright --target-url http://127.0.0.1:3000 --prd prd.docx
 ```
 
 Optional API key:
@@ -111,6 +161,7 @@ Implemented:
 - FastAPI service
 - SQLite run storage
 - PRD parsing
+- Markdown/text/DOCX PRD loading
 - RTM and BDD generation
 - Test case generation
 - Mock browser execution

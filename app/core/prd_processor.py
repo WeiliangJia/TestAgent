@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import logging
 import re
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 from app.config import Settings
 from app.models.test_case import Requirement
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PRDProcessor:
     """Parses Markdown PRDs.
 
-    PRD input is expected to be Markdown text (inline via ``prd_content`` or a
-    ``.md`` file via ``prd_path``). PDF / DOCX are not supported.
+    PRD input is expected to be text content, a Markdown/text file, or a
+    lightweight ``.docx`` file via ``prd_path``. PDF is not supported.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -32,6 +37,9 @@ class PRDProcessor:
             raise ValueError("prd_path must be inside the configured workspace.")
         if not path.exists():
             raise FileNotFoundError(f"PRD file not found: {path}")
+        LOGGER.info("Loading PRD from %s", path)
+        if path.suffix.lower() == ".docx":
+            return _read_docx_text(path)
         return path.read_text(encoding="utf-8").strip()
 
     def extract_requirements(self, prd_content: str) -> list[Requirement]:
@@ -56,6 +64,7 @@ class PRDProcessor:
             )
         if not requirements:
             raise ValueError("No actionable requirements found in PRD.")
+        LOGGER.info("Extracted %s requirements from PRD", len(requirements))
         return requirements
 
     def build_rtm(self, requirements: list[Requirement]) -> list[dict]:
@@ -153,3 +162,34 @@ def _dedupe_keep_order(lines: list[str]) -> list[str]:
             seen.add(key)
             result.append(line)
     return result
+
+
+def _read_docx_text(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            document_xml = archive.read("word/document.xml")
+    except KeyError as exc:
+        raise ValueError(f"Invalid DOCX file, missing word/document.xml: {path}") from exc
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"Invalid DOCX file: {path}") from exc
+
+    root = ElementTree.fromstring(document_xml)
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    paragraphs: list[str] = []
+    for paragraph in root.iter(f"{namespace}p"):
+        chunks: list[str] = []
+        for node in paragraph.iter():
+            if node.tag == f"{namespace}t" and node.text:
+                chunks.append(node.text)
+            elif node.tag == f"{namespace}tab":
+                chunks.append("\t")
+            elif node.tag == f"{namespace}br":
+                chunks.append("\n")
+        text = "".join(chunks).strip()
+        if text:
+            paragraphs.append(text)
+
+    content = "\n".join(paragraphs).strip()
+    if not content:
+        raise ValueError(f"No readable text found in DOCX file: {path}")
+    return content
