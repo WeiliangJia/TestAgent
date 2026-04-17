@@ -24,10 +24,10 @@ async def health() -> HealthResponse:
 async def create_test_run(
     request: TestRunRequest, background_tasks: BackgroundTasks
 ) -> TestRunCreated:
-    if not request.prd_content and not request.prd_path:
+    if request.prd_json is None and not request.prd_content and not request.prd_path:
         raise HTTPException(
             status_code=400,
-            detail="Either prdContent or prdPath is required.",
+            detail="One of prdJson, prdContent, or prdPath is required.",
         )
 
     test_id = orchestrator.create_run(request)
@@ -39,6 +39,7 @@ async def create_test_run(
     return TestRunCreated(
         projectId=request.project_id,
         testId=test_id,
+        userStoryId=request.user_story_id,
         status="queued",
         reportUrl=f"/test/report/{test_id}?project_id={request.project_id}",
     )

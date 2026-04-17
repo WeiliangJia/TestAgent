@@ -1,23 +1,26 @@
 from __future__ import annotations
 
-from app.models.test_case import BDDStory, Requirement, TestCase, TestStep
+from app.models.test_case import (
+    BDDStory,
+    Requirement,
+    TestCase,
+    TestStep,
+    UserStory,
+)
 
 
 class TestCaseGenerator:
-    def generate(
-        self, requirements: list[Requirement], stories: list[BDDStory]
+    def generate_for_story(
+        self,
+        requirement: Requirement,
+        story: UserStory,
+        bdd_story: BDDStory,
     ) -> list[TestCase]:
-        by_req_id = {item.req_id: item for item in requirements}
         test_cases: list[TestCase] = []
-
-        for index, story in enumerate(stories, start=1):
-            requirement = by_req_id[story.req_id]
-            expected = (
-                requirement.acceptance_criteria[0]
-                if requirement.acceptance_criteria
-                else requirement.description
-            )
-            steps = [
+        for index, criterion in enumerate(story.acceptance_criteria, start=1):
+            expected = criterion.description or story.description
+            context_line = "; ".join(story.context_hints) if story.context_hints else ""
+            steps: list[TestStep] = [
                 TestStep(
                     order=1,
                     instruction="Open the target website as a normal user.",
@@ -25,12 +28,12 @@ class TestCaseGenerator:
                 ),
                 TestStep(
                     order=2,
-                    instruction=f"Complete the user goal: {requirement.description}",
-                    expected=expected,
+                    instruction=_story_instruction(story, context_line),
+                    expected=story.description or story.title,
                 ),
                 TestStep(
                     order=3,
-                    instruction=f"Verify the visible result for: {requirement.description}",
+                    instruction=f"Verify acceptance criterion {criterion.ac_id}: {expected}",
                     expected=expected,
                 ),
             ]
@@ -39,9 +42,20 @@ class TestCaseGenerator:
                     test_case_id=f"TC-{index:03d}",
                     req_id=requirement.req_id,
                     story_id=story.story_id,
-                    story=story.gherkin,
+                    ac_id=criterion.ac_id,
+                    story=bdd_story.gherkin,
                     expected=expected,
+                    test_type=criterion.test_type,
                     steps=steps,
                 )
             )
         return test_cases
+
+
+def _story_instruction(story: UserStory, context_line: str) -> str:
+    instruction = f"Complete user story {story.story_id}: {story.description or story.title}"
+    if context_line:
+        instruction = f"{instruction} (context: {context_line})"
+    if story.notes:
+        instruction = f"{instruction} — notes: {story.notes}"
+    return instruction

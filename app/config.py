@@ -60,12 +60,6 @@ class Settings:
     default_timeout_seconds: int
     workspace_root: Path
 
-    # PRD requirement extraction LLM
-    prd_llm_provider: str
-    prd_llm_model: str
-    prd_llm_max_requirements: int
-    prd_llm_max_chars: int
-
     # Browser-use driver LLM
     browser_use_llm_provider: str
     browser_use_llm_model: str
@@ -99,15 +93,6 @@ class Settings:
             max_project_concurrency=int(os.getenv("TEST_AGENT_PROJECT_CONCURRENCY", "3")),
             default_timeout_seconds=int(os.getenv("TEST_AGENT_TIMEOUT_SECONDS", "60")),
             workspace_root=workspace_root,
-            prd_llm_provider=os.getenv("TEST_AGENT_PRD_PROVIDER", "glm").lower(),
-            prd_llm_model=os.getenv(
-                "TEST_AGENT_PRD_MODEL",
-                os.getenv("TEST_AGENT_BROWSER_USE_MODEL", "glm-5.1"),
-            ),
-            prd_llm_max_requirements=int(
-                os.getenv("TEST_AGENT_PRD_MAX_REQUIREMENTS", "12")
-            ),
-            prd_llm_max_chars=int(os.getenv("TEST_AGENT_PRD_MAX_CHARS", "60000")),
             browser_use_llm_provider=os.getenv("TEST_AGENT_BROWSER_USE_PROVIDER", "glm").lower(),
             browser_use_llm_model=os.getenv("TEST_AGENT_BROWSER_USE_MODEL", "glm-5.1"),
             browser_use_max_steps=int(os.getenv("TEST_AGENT_BROWSER_USE_MAX_STEPS", "20")),
@@ -129,10 +114,6 @@ class Settings:
         if self.execution_mode != "browser_use":
             simulated.append(
                 f"TEST_AGENT_EXECUTION_MODE must be browser_use, got {self.execution_mode!r}"
-            )
-        if self.prd_llm_provider in {"", "heuristic", "mock", "rules"}:
-            simulated.append(
-                f"TEST_AGENT_PRD_PROVIDER must be a real LLM provider, got {self.prd_llm_provider!r}"
             )
         if self.vlm_provider in {"", "mock"}:
             simulated.append(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 
@@ -36,20 +37,19 @@ class Orchestrator:
 
     def create_run(self, request: TestRunRequest) -> str:
         test_id = f"test_{uuid.uuid4().hex[:12]}"
-        prd_content = None
-        if request.prd_content:
-            prd_content = request.prd_content
+        prd_snapshot = _serialize_prd_source(request)
         self.store.create_run(
             project_id=request.project_id,
             test_id=test_id,
             target_url=request.target_url,
-            prd_content=prd_content,
+            prd_content=prd_snapshot,
         )
         LOGGER.info(
-            "Created test run project_id=%s test_id=%s target_url=%s",
+            "Created test run project_id=%s test_id=%s target_url=%s user_story=%s",
             request.project_id,
             test_id,
             request.target_url,
+            request.user_story_id,
         )
         return test_id
 
@@ -61,48 +61,56 @@ class Orchestrator:
             project_id=request.project_id, test_id=test_id
         )
         try:
-            LOGGER.info("Starting test run project_id=%s test_id=%s", request.project_id, test_id)
+            LOGGER.info(
+                "Starting test run project_id=%s test_id=%s user_story=%s",
+                request.project_id,
+                test_id,
+                request.user_story_id,
+            )
             self.store.update_run(
                 project_id=request.project_id, test_id=test_id, status="running"
             )
-            prd_content = self.prd_processor.load_content(
-                request.prd_content, request.prd_path
+            document = self.prd_processor.load_document(
+                prd_json=request.prd_json,
+                prd_content=request.prd_content,
+                prd_path=request.prd_path,
+            )
+            requirement, story = self.prd_processor.select_story(
+                document, request.user_story_id
+            )
+            rtm = self.prd_processor.build_rtm(requirement, story)
+            bdd_story = self.bdd_generator.generate_for_story(requirement, story)
+            test_cases = self.test_case_generator.generate_for_story(
+                requirement, story, bdd_story
             )
             LOGGER.info(
-                "Loaded PRD for test_id=%s (%s characters)",
-                test_id,
-                len(prd_content),
-            )
-            runtime.put("target_url", request.target_url)
-            runtime.put("prd_size", len(prd_content))
-
-            requirements = self.prd_processor.extract_requirements(prd_content)
-            rtm = self.prd_processor.build_rtm(requirements)
-            stories = self.bdd_generator.generate(requirements)
-            test_cases = self.test_case_generator.generate(requirements, stories)
-            LOGGER.info(
-                "Generated %s requirements, %s stories, %s test cases for test_id=%s",
-                len(requirements),
-                len(stories),
+                "Prepared story %s with %s acceptance criteria → %s test cases",
+                story.story_id,
+                len(story.acceptance_criteria),
                 len(test_cases),
-                test_id,
             )
 
+            runtime.put("target_url", request.target_url)
+            runtime.put("project", document.project)
+            runtime.put("user_story_id", story.story_id)
+            runtime.put("acceptance_criteria", len(story.acceptance_criteria))
             runtime.record(
-                f"Parsed {len(requirements)} requirements → "
-                f"{len(stories)} stories → {len(test_cases)} test cases."
+                f"Loaded PRD {document.project} v{document.version}; "
+                f"running story {story.story_id} ({len(story.acceptance_criteria)} AC → "
+                f"{len(test_cases)} test cases)."
             )
+
             self.memory.l1.remember_prd_summary(
                 project_id=request.project_id,
-                summary=_summarize_prd(requirements),
-                requirement_count=len(requirements),
+                summary=_summarize_story(requirement, story),
+                requirement_count=1,
             )
 
             self.store.update_run(
                 project_id=request.project_id,
                 test_id=test_id,
                 rtm=rtm,
-                stories=[story.to_dict() for story in stories],
+                stories=[bdd_story.to_dict()],
                 test_cases=[case.to_dict() for case in test_cases],
             )
 
@@ -118,8 +126,11 @@ class Orchestrator:
                 project_id=request.project_id,
                 test_id=test_id,
                 target_url=request.target_url,
+                document=document,
+                requirement=requirement,
+                user_story=story,
                 rtm=rtm,
-                stories=stories,
+                bdd_story=bdd_story,
                 test_cases=test_cases,
                 results=results,
             )
@@ -131,6 +142,7 @@ class Orchestrator:
                     "status": report["status"],
                     "summary": report["summary"],
                     "targetUrl": request.target_url,
+                    "userStoryId": story.story_id,
                 },
             )
 
@@ -167,10 +179,23 @@ class Orchestrator:
             )
 
 
-def _summarize_prd(requirements: list) -> str:
-    if not requirements:
-        return "(empty)"
-    lines = [f"- [{req.priority}] {req.description}" for req in requirements[:5]]
-    if len(requirements) > 5:
-        lines.append(f"- …and {len(requirements) - 5} more")
+def _serialize_prd_source(request: TestRunRequest) -> str | None:
+    if request.prd_json is not None:
+        return json.dumps(request.prd_json, ensure_ascii=True)
+    if request.prd_content:
+        return request.prd_content
+    if request.prd_path:
+        return f"prdPath={request.prd_path}"
+    return None
+
+
+def _summarize_story(requirement, story) -> str:
+    lines = [
+        f"- Requirement {requirement.req_id}: {requirement.name}",
+        f"- Story {story.story_id} (priority={story.priority}): {story.title}",
+    ]
+    for criterion in story.acceptance_criteria[:5]:
+        lines.append(f"  - [{criterion.test_type}] {criterion.ac_id}: {criterion.description}")
+    if len(story.acceptance_criteria) > 5:
+        lines.append(f"  - …and {len(story.acceptance_criteria) - 5} more")
     return "\n".join(lines)

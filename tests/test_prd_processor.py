@@ -1,167 +1,156 @@
 from __future__ import annotations
 
-import sys
-import types
-import zipfile
+import json
 from pathlib import Path
-from types import SimpleNamespace
+
+import pytest
 
 from app.config import Settings
 from app.core.prd_processor import PRDProcessor
 
 
-def test_extract_requirements_from_bullets(tmp_path: Path) -> None:
+def test_load_document_from_json_object(tmp_path: Path) -> None:
     processor = PRDProcessor(_settings_for(tmp_path))
-    requirements = processor.extract_requirements(
-        """
-        # Product
-        - User can log in with email and password.
-        - User should search inventory.
-        """
+    document = processor.load_document(
+        prd_json=_sample_prd(), prd_content=None, prd_path=None
     )
 
-    assert len(requirements) == 2
-    assert requirements[0].req_id == "REQ-001"
-    assert "log in" in requirements[0].description
+    assert document.project == "CarSage"
+    assert document.version == "1.0.0"
+    assert len(document.requirements) == 1
+    story = document.requirements[0].user_stories[0]
+    assert story.story_id == "R-01.US-01"
+    assert story.acceptance_criteria[0].ac_id == "R-01.US-01.AC-01"
 
 
-def test_build_rtm(tmp_path: Path) -> None:
+def test_select_story_returns_matching_story(tmp_path: Path) -> None:
     processor = PRDProcessor(_settings_for(tmp_path))
-    requirements = processor.extract_requirements("- User can open the dashboard.")
-    rtm = processor.build_rtm(requirements)
+    document = processor.load_document(
+        prd_json=_sample_prd(), prd_content=None, prd_path=None
+    )
 
-    assert rtm[0]["reqId"] == "REQ-001"
-    assert rtm[0]["testCaseIds"] if "testCaseIds" in rtm[0] else True
+    requirement, story = processor.select_story(document, "R-01.US-02")
+
+    assert requirement.req_id == "R-01"
+    assert story.title == "对话输入 UI 与双语切换"
+    assert story.design_review_required is True
 
 
-def test_load_content_from_docx(tmp_path: Path) -> None:
-    prd_path = tmp_path / "prd.docx"
-    _write_minimal_docx(
-        prd_path,
-        [
-            "User can open the home page.",
-            "User should see the login button.",
+def test_select_story_missing_raises(tmp_path: Path) -> None:
+    processor = PRDProcessor(_settings_for(tmp_path))
+    document = processor.load_document(
+        prd_json=_sample_prd(), prd_content=None, prd_path=None
+    )
+
+    with pytest.raises(KeyError):
+        processor.select_story(document, "R-99.US-99")
+
+
+def test_load_document_from_path(tmp_path: Path) -> None:
+    prd_path = tmp_path / "prd.json"
+    prd_path.write_text(json.dumps(_sample_prd()), encoding="utf-8")
+    processor = PRDProcessor(_settings_for(tmp_path))
+
+    document = processor.load_document(
+        prd_json=None, prd_content=None, prd_path="prd.json"
+    )
+
+    assert document.project == "CarSage"
+
+
+def test_load_document_rejects_non_json_extension(tmp_path: Path) -> None:
+    prd_path = tmp_path / "prd.md"
+    prd_path.write_text("- not json", encoding="utf-8")
+    processor = PRDProcessor(_settings_for(tmp_path))
+
+    with pytest.raises(ValueError):
+        processor.load_document(prd_json=None, prd_content=None, prd_path="prd.md")
+
+
+def test_load_document_requires_some_source(tmp_path: Path) -> None:
+    processor = PRDProcessor(_settings_for(tmp_path))
+
+    with pytest.raises(ValueError):
+        processor.load_document(prd_json=None, prd_content=None, prd_path=None)
+
+
+def test_build_rtm_surfaces_acceptance_criteria(tmp_path: Path) -> None:
+    processor = PRDProcessor(_settings_for(tmp_path))
+    document = processor.load_document(
+        prd_json=_sample_prd(), prd_content=None, prd_path=None
+    )
+    requirement, story = processor.select_story(document, "R-01.US-01")
+
+    rtm = processor.build_rtm(requirement, story)
+
+    assert rtm[0]["reqId"] == "R-01"
+    assert rtm[0]["storyId"] == "R-01.US-01"
+    assert rtm[0]["acceptanceCriteria"][0]["id"] == "R-01.US-01.AC-01"
+
+
+def _sample_prd() -> dict:
+    return {
+        "$schema": "sage-loop-prd-v1",
+        "project": "CarSage",
+        "version": "1.0.0",
+        "pipelineConfig": {"branchPattern": "feature/{requirementId}"},
+        "designReviewPolicy": {"reviewMode": "design_conformance"},
+        "requirements": [
+            {
+                "id": "R-01",
+                "name": "双语对话 — 核心对话流",
+                "feature": "F1",
+                "description": "用户用中文/英文聊天说需求。",
+                "securityFlags": [],
+                "userStories": [
+                    {
+                        "id": "R-01.US-01",
+                        "title": "Chat API 流式对话端点",
+                        "description": "作为用户，我希望与 AI 对话时获得流式响应。",
+                        "priority": 1,
+                        "dependsOn": [],
+                        "contextHints": ["使用 Vercel AI SDK streamText"],
+                        "designImages": [],
+                        "designReviewRequired": False,
+                        "notes": "后端故事。",
+                        "acceptanceCriteria": [
+                            {
+                                "id": "R-01.US-01.AC-01",
+                                "description": "POST /api/chat 返回 SSE 流。",
+                                "testType": "integration",
+                            },
+                            {
+                                "id": "R-01.US-01.AC-02",
+                                "description": "onFinish 正确触发。",
+                                "testType": "integration",
+                            },
+                        ],
+                    },
+                    {
+                        "id": "R-01.US-02",
+                        "title": "对话输入 UI 与双语切换",
+                        "description": "作为用户，我希望看到居中大输入框。",
+                        "priority": 2,
+                        "dependsOn": ["R-01.US-01"],
+                        "contextHints": ["输入框占 viewport 60%"],
+                        "designImages": [],
+                        "designReviewRequired": True,
+                        "notes": "前端 UI。",
+                        "acceptanceCriteria": [
+                            {
+                                "id": "R-01.US-02.AC-01",
+                                "description": "输入框渲染居中。",
+                                "testType": "visual",
+                            }
+                        ],
+                    },
+                ],
+            }
         ],
-    )
-    processor = PRDProcessor(_settings_for(tmp_path))
-
-    content = processor.load_content(None, "prd.docx")
-    requirements = processor.extract_requirements(content)
-
-    assert "home page" in content
-    assert len(requirements) == 2
-
-
-def test_extract_requirements_with_glm_openai_compatible_client(
-    monkeypatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("ZAI_API_KEY", "test-key")
-    monkeypatch.setenv("ZAI_BASE_URL", "https://example.test/api/paas/v4/")
-
-    class FakeCompletions:
-        last_kwargs = {}
-
-        def create(self, **kwargs):
-            FakeCompletions.last_kwargs = kwargs
-            return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
-                        message=SimpleNamespace(
-                            content=(
-                                '{"requirements":[{"description":"User can search inventory.",'
-                                '"priority":"P1","acceptance_criteria":["Search results are visible."]}]}'
-                            )
-                        )
-                    )
-                ]
-            )
-
-    class FakeOpenAI:
-        last_kwargs = {}
-
-        def __init__(self, **kwargs):
-            FakeOpenAI.last_kwargs = kwargs
-            self.chat = SimpleNamespace(completions=FakeCompletions())
-
-    fake_module = types.ModuleType("openai")
-    fake_module.OpenAI = FakeOpenAI
-    monkeypatch.setitem(sys.modules, "openai", fake_module)
-    processor = PRDProcessor(
-        _settings_for(
-            tmp_path,
-            prd_llm_provider="glm",
-            prd_llm_model="glm-5.1",
-        )
-    )
-
-    requirements = processor.extract_requirements("Car marketplace PRD")
-
-    assert requirements[0].req_id == "REQ-001"
-    assert requirements[0].description == "User can search inventory."
-    assert requirements[0].priority == "P1"
-    assert requirements[0].acceptance_criteria == ["Search results are visible."]
-    assert FakeOpenAI.last_kwargs == {
-        "api_key": "test-key",
-        "base_url": "https://example.test/api/paas/v4/",
     }
-    assert FakeCompletions.last_kwargs["model"] == "glm-5.1"
 
 
-def test_extract_requirements_repairs_invalid_llm_json(
-    monkeypatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("ZAI_API_KEY", "test-key")
-    monkeypatch.setenv("ZAI_BASE_URL", "https://example.test/api/paas/v4/")
-
-    class FakeCompletions:
-        calls = []
-
-        def create(self, **kwargs):
-            FakeCompletions.calls.append(kwargs)
-            if len(FakeCompletions.calls) == 1:
-                content = (
-                    '{"requirements":[{"description":"User can open "inventory" page.",'
-                    '"priority":"P1","acceptance_criteria":["Inventory is visible."]}]}'
-                )
-            else:
-                content = (
-                    '{"requirements":[{"description":"User can open inventory page.",'
-                    '"priority":"P1","acceptance_criteria":["Inventory is visible."]}]}'
-                )
-            return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(message=SimpleNamespace(content=content))
-                ]
-            )
-
-    class FakeOpenAI:
-        def __init__(self, **kwargs):
-            self.chat = SimpleNamespace(completions=FakeCompletions())
-
-    fake_module = types.ModuleType("openai")
-    fake_module.OpenAI = FakeOpenAI
-    monkeypatch.setitem(sys.modules, "openai", fake_module)
-    processor = PRDProcessor(
-        _settings_for(
-            tmp_path,
-            prd_llm_provider="glm",
-            prd_llm_model="glm-5.1",
-        )
-    )
-
-    requirements = processor.extract_requirements("Inventory PRD")
-
-    assert len(FakeCompletions.calls) == 2
-    assert "repair malformed json" in FakeCompletions.calls[1]["messages"][0]["content"].lower()
-    assert requirements[0].description == "User can open inventory page."
-
-
-def _settings_for(
-    root: Path,
-    *,
-    prd_llm_provider: str = "heuristic",
-    prd_llm_model: str = "gpt-4o",
-) -> Settings:
+def _settings_for(root: Path) -> Settings:
     data_dir = root / "data"
     return Settings(
         app_name="Test Agent",
@@ -174,29 +163,10 @@ def _settings_for(
         max_project_concurrency=3,
         default_timeout_seconds=60,
         workspace_root=root,
-        prd_llm_provider=prd_llm_provider,
-        prd_llm_model=prd_llm_model,
-        prd_llm_max_requirements=12,
-        prd_llm_max_chars=60000,
-        browser_use_llm_provider="openai",
-        browser_use_llm_model="gpt-4o",
+        browser_use_llm_provider="glm",
+        browser_use_llm_model="glm-5.1",
         browser_use_max_steps=20,
         vlm_provider="glm",
         vlm_model="glm-5v-turbo",
         assertion_warning_threshold=0.6,
     )
-
-
-def _write_minimal_docx(path: Path, paragraphs: list[str]) -> None:
-    body = "".join(
-        f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>"
-        for paragraph in paragraphs
-    )
-    document_xml = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        f"<w:body>{body}</w:body>"
-        "</w:document>"
-    )
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("word/document.xml", document_xml)
