@@ -4,8 +4,15 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 from app.config import Settings
-from app.integrations.browser_use_client import BrowserUseClient
+from app.integrations.browser_use_client import (
+    BrowserUseClient,
+    _build_compatible_browser_profile,
+)
+from app.models.test_case import TestCase as ModelTestCase
+from app.models.test_case import TestStep as ModelTestStep
 
 
 def test_browser_use_glm_requires_api_key(monkeypatch, tmp_path: Path) -> None:
@@ -72,6 +79,118 @@ def test_browser_use_glm_falls_back_to_llm_module(monkeypatch, tmp_path: Path) -
         "api_key": "test-key",
         "base_url": "https://example.test/api/paas/v4/",
     }
+
+
+def test_browser_session_profile_filters_unsupported_devtools_kwarg(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class FakeArgs:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def model_dump(self, *args, **kwargs):
+            return dict(self.payload)
+
+    class FakeBrowserProfile:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def kwargs_for_launch_persistent_context(self):
+            return FakeArgs({"headless": True, "devtools": False})
+
+        def kwargs_for_launch(self):
+            return FakeArgs({"headless": True, "devtools": False})
+
+    class FakeBrowserSession:
+        last_kwargs = {}
+
+        def __init__(self, **kwargs):
+            FakeBrowserSession.last_kwargs = kwargs
+
+    fake_browser_use = types.ModuleType("browser_use")
+    fake_browser_use.__path__ = []
+    fake_browser_use.BrowserSession = FakeBrowserSession
+    fake_browser_pkg = types.ModuleType("browser_use.browser")
+    fake_browser_pkg.__path__ = []
+    fake_profile_module = types.ModuleType("browser_use.browser.profile")
+    fake_profile_module.BrowserProfile = FakeBrowserProfile
+    monkeypatch.setitem(sys.modules, "browser_use", fake_browser_use)
+    monkeypatch.setitem(sys.modules, "browser_use.browser", fake_browser_pkg)
+    monkeypatch.setitem(sys.modules, "browser_use.browser.profile", fake_profile_module)
+
+    client = BrowserUseClient(_settings_for(tmp_path, provider="glm"))
+
+    session, session_kwarg = client._build_browser_session()
+
+    assert isinstance(session, FakeBrowserSession)
+    assert session_kwarg == "browser_session"
+    profile = FakeBrowserSession.last_kwargs["browser_profile"]
+    assert profile.kwargs == {"headless": True}
+    assert profile.kwargs_for_launch_persistent_context().model_dump() == {
+        "headless": True
+    }
+    assert profile.kwargs_for_launch().model_dump() == {"headless": True}
+
+
+def test_installed_browser_profile_filters_unsupported_devtools_kwarg() -> None:
+    pytest.importorskip("browser_use.browser.profile")
+
+    profile = _build_compatible_browser_profile()
+
+    assert profile is not None
+    assert "devtools" not in profile.kwargs_for_launch().model_dump()
+    assert "devtools" not in profile.kwargs_for_launch_persistent_context().model_dump()
+
+
+@pytest.mark.asyncio
+async def test_browser_use_agent_disables_builtin_memory(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class FakeAgent:
+        last_kwargs = {}
+
+        def __init__(self, **kwargs):
+            FakeAgent.last_kwargs = kwargs
+
+        async def run(self, max_steps: int):
+            return None
+
+    fake_browser_use = types.ModuleType("browser_use")
+    fake_browser_use.Agent = FakeAgent
+    monkeypatch.setitem(sys.modules, "browser_use", fake_browser_use)
+
+    client = BrowserUseClient(_settings_for(tmp_path, provider="glm"))
+    monkeypatch.setattr(
+        client,
+        "_build_browser_use_llm",
+        lambda: (object(), "fake llm"),
+    )
+    monkeypatch.setattr(client, "_build_browser_session", lambda: (None, None))
+
+    execution = await client._execute_with_browser_use(
+        target_url="https://example.test",
+        test_case=ModelTestCase(
+            test_case_id="TC-001",
+            req_id="R-01",
+            story_id="R-01.US-01",
+            ac_id="R-01.US-01.AC-01",
+            story="Story",
+            expected="Expected",
+            test_type="integration",
+            steps=[
+                ModelTestStep(order=1, instruction="Open page", expected="Loaded")
+            ],
+        ),
+        screenshot_path=tmp_path / "screenshot.png",
+        credentials=None,
+        prompt_context="",
+    )
+
+    assert FakeAgent.last_kwargs["enable_memory"] is False
+    assert execution.status == "failed"
+    assert execution.dom_snapshot == "<browser-execution-failed/>"
+    assert "Expected" not in execution.dom_snapshot
+    assert any("placeholder screenshot" in note for note in execution.notes)
 
 
 def _settings_for(root: Path, *, provider: str) -> Settings:

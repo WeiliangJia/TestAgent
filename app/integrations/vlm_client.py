@@ -68,6 +68,9 @@ class OpenAIVLMClient(VLMClient):
                 visual_issues=["Screenshot missing."],
                 rationale="no-screenshot",
             )
+        placeholder = _placeholder_screenshot_response(screenshot_path)
+        if placeholder is not None:
+            return placeholder
 
         client = OpenAI()
         try:
@@ -118,6 +121,9 @@ class AnthropicVLMClient(VLMClient):
                 visual_issues=["Screenshot missing."],
                 rationale="no-screenshot",
             )
+        placeholder = _placeholder_screenshot_response(screenshot_path)
+        if placeholder is not None:
+            return placeholder
 
         client = Anthropic()
         try:
@@ -177,36 +183,52 @@ class GLMVLMClient(VLMClient):
                 visual_issues=["Screenshot missing."],
                 rationale="no-screenshot",
             )
+        placeholder = _placeholder_screenshot_response(screenshot_path)
+        if placeholder is not None:
+            return placeholder
 
         base_url = _glm_base_url()
 
-        try:
-            LOGGER.info(
-                "Calling GLM visual assertion through OpenAI-compatible API model=%s screenshot=%s",
-                self.model,
-                screenshot_path,
+        LOGGER.info(
+            "Calling GLM visual assertion through OpenAI-compatible API model=%s screenshot=%s",
+            self.model,
+            screenshot_path,
+        )
+        client = OpenAI(api_key=api_key, base_url=base_url)
+
+        text = ""
+        for attempt, max_tokens in enumerate((500, 1200), start=1):
+            try:
+                completion = _create_glm_completion(
+                    client=client,
+                    model=self.model,
+                    expected=expected,
+                    screenshot_path=screenshot_path,
+                    max_tokens=max_tokens,
+                )
+                text = _extract_completion_text(completion)
+            except Exception as exc:  # pragma: no cover - network dependent
+                LOGGER.exception("GLM visual assertion failed on attempt %d", attempt)
+                return LayerVerdict(
+                    status="warning",
+                    confidence=0.3,
+                    visual_issues=[f"VLM call failed: {type(exc).__name__}"],
+                    rationale=str(exc)[:200],
+                )
+            if text.strip():
+                break
+            LOGGER.warning(
+                "GLM visual assertion returned empty text on attempt %d "
+                "(max_tokens=%d); retrying with more room",
+                attempt,
+                max_tokens,
             )
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            completion = _create_glm_completion(
-                client=client,
-                model=self.model,
-                expected=expected,
-                screenshot_path=screenshot_path,
-            )
-            text = _extract_completion_text(completion)
-        except Exception as exc:  # pragma: no cover - network dependent
-            LOGGER.exception("GLM visual assertion failed")
-            return LayerVerdict(
-                status="warning",
-                confidence=0.3,
-                visual_issues=[f"VLM call failed: {type(exc).__name__}"],
-                rationale=str(exc)[:200],
-            )
-        if not text:
+
+        if not text.strip():
             return LayerVerdict(
                 status="warning",
                 confidence=0.4,
-                visual_issues=["VLM returned an empty response."],
+                visual_issues=["VLM returned an empty response after retry."],
                 rationale="empty-response",
             )
         return _parse_verdict(text)
@@ -280,7 +302,12 @@ def _glm_base_url() -> str:
 
 
 def _create_glm_completion(
-    *, client: object, model: str, expected: str, screenshot_path: str
+    *,
+    client: object,
+    model: str,
+    expected: str,
+    screenshot_path: str,
+    max_tokens: int = 500,
 ) -> object:
     completion_kwargs = {
         "model": model,
@@ -298,7 +325,7 @@ def _create_glm_completion(
                 ],
             }
         ],
-        "max_tokens": 500,
+        "max_tokens": max_tokens,
         "thinking": {"type": "disabled"},
     }
     completions = getattr(getattr(client, "chat"), "completions")
@@ -349,3 +376,27 @@ def _missing_key_response(env_var: str) -> LayerVerdict:
         visual_issues=[f"{env_var} is not set."],
         rationale="missing-api-key",
     )
+
+
+def _placeholder_screenshot_response(screenshot_path: str) -> LayerVerdict | None:
+    dimensions = _png_dimensions(Path(screenshot_path))
+    if dimensions and dimensions[0] <= 1 and dimensions[1] <= 1:
+        return LayerVerdict(
+            status="warning",
+            confidence=0.3,
+            visual_issues=["Screenshot is a placeholder, not a real page capture."],
+            rationale="placeholder-screenshot",
+        )
+    return None
+
+
+def _png_dimensions(path: Path) -> tuple[int, int] | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    return width, height

@@ -13,6 +13,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from app.config import settings  # noqa: F401 — side effect: loads .env into os.environ
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "serve":
@@ -57,9 +58,29 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--user-story",
         default=os.getenv("TEST_AGENT_USER_STORY_ID"),
-        help="User story id to execute, e.g. R-01.US-01.",
+        help=(
+            "User story id to execute, e.g. R-01.US-01. Optional when a ledger is "
+            "provided — the ledger's cursor picks the next open story."
+        ),
     )
-    run.add_argument("--json", action="store_true", help="Print the full report JSON.")
+    run.add_argument(
+        "--ledger",
+        default=None,
+        help=(
+            "Path to a sage-loop ledger JSON file. Defaults to TEST_AGENT_LEDGER_PATH "
+            "or MVP-PRD.sage-loop-ledger.json in the workspace root."
+        ),
+    )
+    run.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a terminal-safe report summary JSON.",
+    )
+    run.add_argument(
+        "--full-json",
+        action="store_true",
+        help="Print the full report JSON, including requirement/userStory/testCases.",
+    )
     _add_runtime_overrides(run)
     return parser
 
@@ -127,9 +148,11 @@ def _run(args: argparse.Namespace) -> int:
         )
 
     user_story_id = args.user_story
-    if not user_story_id:
+    ledger_path = _resolve_ledger_path(args.ledger, settings.workspace_root)
+    if not user_story_id and not ledger_path:
         raise SystemExit(
-            "Missing user story id. Use --user-story or set TEST_AGENT_USER_STORY_ID."
+            "Missing user story id. Use --user-story, set TEST_AGENT_USER_STORY_ID, "
+            "or provide --ledger / TEST_AGENT_LEDGER_PATH."
         )
 
     prd_path = _resolve_prd_path(args.prd, settings.workspace_root)
@@ -142,15 +165,17 @@ def _run(args: argparse.Namespace) -> int:
         targetUrl=target_url,
         userStoryId=user_story_id,
         prdPath=str(prd_path),
+        ledgerPath=str(ledger_path) if ledger_path else None,
         sync=True,
     )
 
     LOGGER.info(
-        "Running user story %s project_id=%s target_url=%s prd=%s mode=%s vlm=%s/%s",
-        user_story_id,
+        "Running user story %s project_id=%s target_url=%s prd=%s ledger=%s mode=%s vlm=%s/%s",
+        user_story_id or "(from ledger)",
         args.project_id,
         target_url,
         prd_path,
+        ledger_path or "(none)",
         settings.execution_mode,
         settings.vlm_provider,
         settings.vlm_model,
@@ -161,12 +186,40 @@ def _run(args: argparse.Namespace) -> int:
     if not row:
         raise SystemExit(f"Test run disappeared: {test_id}")
 
+    effective_story = (
+        (row.get("report") or {}).get("userStory", {}).get("id")
+        or user_story_id
+        or "(from ledger)"
+    )
     report = row.get("report")
-    if args.json and report:
+    if args.full_json and report:
         print(json.dumps(report, indent=2, ensure_ascii=False))
+    elif args.json:
+        print(
+            json.dumps(
+                _terminal_report_summary(row, effective_story),
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
     else:
-        _print_summary(row, user_story_id)
+        _print_summary(row, effective_story)
     return 1 if row.get("status") == "failed" else 0
+
+
+def _resolve_ledger_path(ledger_arg: str | None, workspace_root: Path) -> Path | None:
+    candidate: str | None = ledger_arg or os.getenv("TEST_AGENT_LEDGER_PATH")
+    if not candidate:
+        default = workspace_root / "MVP-PRD.sage-loop-ledger.json"
+        return default.resolve() if default.exists() else None
+
+    path = Path(candidate)
+    if not path.is_absolute():
+        path = workspace_root / path
+    path = path.resolve()
+    if not path.exists():
+        raise SystemExit(f"Ledger file not found: {path}")
+    return path
 
 
 def _resolve_prd_path(prd_arg: str | None, workspace_root: Path) -> Path:
@@ -212,6 +265,64 @@ def _print_summary(row: dict, user_story_id: str) -> None:
     if row.get("error"):
         print(f"  error: {row['error']}")
     print("")
+
+
+def _terminal_report_summary(row: dict, user_story_id: str) -> dict:
+    report = row.get("report") or {}
+    summary = report.get("summary") or {}
+    requirement = report.get("requirement") or {}
+    story = report.get("userStory") or {}
+    results = report.get("results") or row.get("results") or []
+
+    payload = {
+        "projectId": report.get("projectId") or row.get("project_id"),
+        "testId": report.get("testId") or row.get("test_id"),
+        "status": row.get("status") or report.get("status"),
+        "targetUrl": report.get("targetUrl") or row.get("target_url"),
+        "prdProject": report.get("prdProject"),
+        "prdVersion": report.get("prdVersion"),
+        "requirement": {
+            "id": requirement.get("id"),
+            "name": requirement.get("name"),
+            "feature": requirement.get("feature"),
+        },
+        "userStory": {
+            "id": story.get("id") or user_story_id,
+            "title": story.get("title"),
+        },
+        "summary": summary,
+        "results": [_terminal_result_summary(item) for item in results],
+        "reportPath": report.get("reportPath"),
+        "error": row.get("error"),
+    }
+    return _drop_none(payload)
+
+
+def _terminal_result_summary(item: dict) -> dict:
+    return _drop_none(
+        {
+            "testCaseId": item.get("testCaseId") or item.get("test_case_id"),
+            "status": item.get("status"),
+            "failureType": item.get("failureType") or item.get("failure_type"),
+            "confidence": item.get("confidence"),
+            "errors": item.get("errors") or [],
+            "visualIssues": (
+                item.get("visualIssues") or item.get("visual_issues") or []
+            ),
+        }
+    )
+
+
+def _drop_none(value):
+    if isinstance(value, dict):
+        return {
+            key: _drop_none(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_drop_none(item) for item in value]
+    return value
 
 
 if __name__ == "__main__":

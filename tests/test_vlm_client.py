@@ -9,6 +9,14 @@ from types import SimpleNamespace
 from app.integrations.vlm_client import GLMVLMClient, build_vlm_client
 
 
+_ONE_PIXEL_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+    b"\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02"
+    b"\x00\x00\x00\x0bIDATx\xdac\xfc\xff\x1f\x00\x03\x03"
+    b"\x02\x00\xef\xbf\xa7\xdb\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
 def test_build_vlm_client_supports_glm_provider() -> None:
     client = build_vlm_client("glm", "glm-5v-turbo")
 
@@ -52,6 +60,21 @@ def test_glm_vlm_reports_missing_openai_sdk(monkeypatch, tmp_path: Path) -> None
 
     assert verdict.status == "warning"
     assert "openai package is not installed." in verdict.visual_issues
+
+
+def test_glm_vlm_skips_placeholder_screenshot(monkeypatch, tmp_path: Path) -> None:
+    screenshot = tmp_path / "screen.png"
+    screenshot.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setenv("ZAI_API_KEY", "test-key")
+
+    verdict = GLMVLMClient(model="glm-5v-turbo").assert_visual(
+        expected="Dashboard is visible.",
+        screenshot_path=str(screenshot),
+    )
+
+    assert verdict.status == "warning"
+    assert verdict.rationale == "placeholder-screenshot"
+    assert "placeholder" in verdict.visual_issues[0]
 
 
 def test_glm_vlm_parses_openai_sdk_response(monkeypatch, tmp_path: Path) -> None:

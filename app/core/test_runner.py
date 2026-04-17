@@ -144,7 +144,7 @@ class TestRunner:
                 execution.screenshot_path,
             )
 
-            return TestCaseResult(
+            result = TestCaseResult(
                 test_case_id=test_case.test_case_id,
                 req_id=test_case.req_id,
                 story=test_case.story,
@@ -155,6 +155,9 @@ class TestRunner:
                 errors=assertion.errors,
                 visual_issues=assertion.visual_issues,
             )
+            if self.settings.inter_test_delay_seconds > 0:
+                await asyncio.sleep(self.settings.inter_test_delay_seconds)
+            return result
 
     def _screenshot_path(
         self, project_id: str, test_id: str, test_case_id: str

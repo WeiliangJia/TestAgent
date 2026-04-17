@@ -75,6 +75,7 @@ Every run targets exactly one user story, identified by its id
 | `TEST_AGENT_TARGET_URL` | Default target URL for `test-agent run` |
 | `TEST_AGENT_PRD_PATH` | Default PRD JSON path (defaults to `prd.json`) |
 | `TEST_AGENT_USER_STORY_ID` | Default user story id for `test-agent run` |
+| `TEST_AGENT_PROJECT_CONCURRENCY` | Per-project test case concurrency (`1` is safest for rate-limited LLM providers) |
 | `TEST_AGENT_LOG_LEVEL` | `INFO` by default; use `DEBUG` for more terminal detail |
 | `ANONYMIZED_TELEMETRY` | Set `False` to disable browser-use telemetry in local runs |
 | `TEST_AGENT_BROWSER_USE_PROVIDER` | `openai` \| `anthropic` \| `glm` (default `glm`) |
@@ -89,11 +90,48 @@ Every run targets exactly one user story, identified by its id
 
 ## Run
 
+PowerShell setup on Windows:
+
+```powershell
+cd "D:\Star X\TestAgent\TestAgent"
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,browser,glm]"
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m patchright install chromium
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Run unit tests from PowerShell:
+
+```powershell
+cd "D:\Star X\TestAgent\TestAgent"
+.\.venv\Scripts\python.exe -m pytest
+```
+
+Run one real browser-use story from PowerShell:
+
+```powershell
+cd "D:\Star X\TestAgent\TestAgent"
+.\.venv\Scripts\python.exe -m app.cli run --json
+```
+
+`--json` prints a terminal-safe summary. The full report is still written to
+`data/reports`; use `--full-json` only when you explicitly want the complete
+report, including requirement, user story, and generated test case JSON.
+
+`app.config` loads `.env` automatically from the TestAgent directory. Set
+`TEST_AGENT_TARGET_URL`, `TEST_AGENT_PRD_PATH`, `TEST_AGENT_USER_STORY_ID`, and
+the provider API key there before running a real browser-use story.
+
+Unix/macOS setup:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,browser,glm]"
-cp .env.example .env
+python -m playwright install chromium
+python -m patchright install chromium
+[ -f .env ] || cp .env.example .env
 ```
 
 Start the API service:
@@ -237,6 +275,7 @@ PRD 必须遵循 sage-loop 规范。完整协议见 `docs/`，Agent 解析时关
 | `TEST_AGENT_TARGET_URL` | `test-agent run` 的默认目标 URL |
 | `TEST_AGENT_PRD_PATH` | 默认 PRD JSON 路径（默认 `prd.json`） |
 | `TEST_AGENT_USER_STORY_ID` | `test-agent run` 的默认 user story id |
+| `TEST_AGENT_PROJECT_CONCURRENCY` | 每个 project 的 test case 并发数；限流明显时建议 `1` |
 | `TEST_AGENT_LOG_LEVEL` | 日志级别，默认 `INFO`；想看更多细节改 `DEBUG` |
 | `ANONYMIZED_TELEMETRY` | 设为 `False` 关闭 browser-use 本地遥测 |
 | `TEST_AGENT_BROWSER_USE_PROVIDER` | `openai` \| `anthropic` \| `glm`（默认 `glm`） |
@@ -251,11 +290,47 @@ PRD 必须遵循 sage-loop 规范。完整协议见 `docs/`，Agent 解析时关
 
 ## 运行
 
+Windows PowerShell 初始化：
+
+```powershell
+cd "D:\Star X\TestAgent\TestAgent"
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,browser,glm]"
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m patchright install chromium
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+PowerShell 跑单元测试：
+
+```powershell
+cd "D:\Star X\TestAgent\TestAgent"
+.\.venv\Scripts\python.exe -m pytest
+```
+
+PowerShell 跑一条真实 browser-use user story：
+
+```powershell
+cd "D:\Star X\TestAgent\TestAgent"
+.\.venv\Scripts\python.exe -m app.cli run --json
+```
+
+`--json` 只打印适合终端查看的摘要。完整报告仍会写入 `data/reports`；只有你明确需要
+包含 requirement、user story、生成测试用例等完整 JSON 时，才使用 `--full-json`。
+
+`app.config` 会自动读取 TestAgent 目录下的 `.env`。真实测试前确认
+`TEST_AGENT_TARGET_URL`、`TEST_AGENT_PRD_PATH`、`TEST_AGENT_USER_STORY_ID` 和
+provider API key 已经设置好。
+
+Unix/macOS 初始化：
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,browser,glm]"
-cp .env.example .env
+python -m playwright install chromium
+python -m patchright install chromium
+[ -f .env ] || cp .env.example .env
 ```
 
 启动 API 服务：

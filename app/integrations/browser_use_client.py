@@ -17,6 +17,7 @@ _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
 _DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4/"
+_UNSUPPORTED_PLAYWRIGHT_LAUNCH_KWARGS = frozenset({"devtools"})
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +31,22 @@ class BrowserExecution:
     console_errors: list[str] = field(default_factory=list)
     network_failures: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _FilteredModelDump:
+    source: Any
+    drop_keys: frozenset[str]
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        dump = getattr(self.source, "model_dump", None)
+        if callable(dump):
+            data = dump(*args, **kwargs)
+        else:
+            data = dict(self.source)
+        for key in self.drop_keys:
+            data.pop(key, None)
+        return data
 
 
 class BrowserUseClient:
@@ -125,7 +142,11 @@ class BrowserUseClient:
         )
         sensitive_data = self._credentials_to_sensitive_data(credentials)
 
-        agent_kwargs: dict[str, Any] = {"task": task, "llm": llm}
+        agent_kwargs: dict[str, Any] = {
+            "task": task,
+            "llm": llm,
+            "enable_memory": False,
+        }
         if sensitive_data:
             agent_kwargs["sensitive_data"] = sensitive_data
         if session is not None and session_kwarg:
@@ -137,7 +158,10 @@ class BrowserUseClient:
         status = "passed"
         current_url = target_url
         dom_snapshot = ""
+        captured_final_page = False
 
+        history = None
+        active_session = session
         try:
             agent = Agent(**agent_kwargs)
         except TypeError as exc:
@@ -146,9 +170,10 @@ class BrowserUseClient:
                 screenshot_path,
                 notes=[f"Agent init failed: {exc}"],
             )
+        active_session = getattr(agent, "browser_session", session) or session
 
         try:
-            page = await _session_page(session)
+            page = await _session_page(active_session)
             if page is not None:
                 page.on(
                     "console",
@@ -172,26 +197,47 @@ class BrowserUseClient:
                 notes.append(f"Agent run failed: {type(exc).__name__}: {exc}")
                 LOGGER.exception("browser-use agent failed for %s", test_case.test_case_id)
 
-            page = await _session_page(session) or page
+            _write_history_screenshot(history, screenshot_path, notes)
+            history_captured = screenshot_path.exists()
+            if history_captured:
+                captured_final_page = True
+                LOGGER.info(
+                    "Using browser-use history screenshot %s", screenshot_path
+                )
+
+            active_session = getattr(agent, "browser_session", active_session) or active_session
+            page = await _session_page(active_session) or page
             if page is not None:
                 try:
                     current_url = page.url
                     dom_snapshot = await page.content()
-                    await page.screenshot(path=str(screenshot_path), full_page=True)
-                    LOGGER.info("Captured browser-use screenshot %s", screenshot_path)
+                    if not history_captured and current_url and current_url != "about:blank":
+                        await page.screenshot(path=str(screenshot_path), full_page=True)
+                        captured_final_page = True
+                        LOGGER.info(
+                            "Captured live browser-use screenshot %s", screenshot_path
+                        )
                 except Exception as exc:  # pragma: no cover
                     notes.append(f"Could not capture final page state: {exc}")
                     LOGGER.warning("Could not capture browser-use final page state: %s", exc)
         finally:
-            await _session_close(session)
-
+            await _session_close(active_session)
+            if session is not None and session is not active_session:
+                await _session_close(session)
         if not screenshot_path.exists():
             screenshot_path.write_bytes(_ONE_PIXEL_PNG)
+            notes.append("Final screenshot unavailable; wrote placeholder screenshot.")
+        if _is_placeholder_png(screenshot_path):
+            status = "failed"
+            notes.append("Browser execution produced only a placeholder screenshot.")
+        if not captured_final_page:
+            status = "failed"
+            notes.append("Browser execution did not expose a final page state.")
         if not dom_snapshot:
             dom_snapshot = (
-                f"<agent-summary>{test_case.expected}</agent-summary>"
+                "<browser-execution-unverified/>"
                 if status == "passed"
-                else f"<agent-error>{test_case.expected}</agent-error>"
+                else "<browser-execution-failed/>"
             )
 
         return BrowserExecution(
@@ -349,7 +395,11 @@ class BrowserUseClient:
         try:
             from browser_use import BrowserSession  # type: ignore
 
-            session = BrowserSession(headless=True)
+            profile = _build_compatible_browser_profile(self.settings.browser_headless)
+            if profile is None:
+                session = BrowserSession(headless=self.settings.browser_headless)
+            else:
+                session = BrowserSession(browser_profile=profile)
             return session, "browser_session"
         except ImportError:
             pass
@@ -495,6 +545,28 @@ def _first_env(*names: str) -> str | None:
     return None
 
 
+def _build_compatible_browser_profile(headless: bool = True) -> Any | None:
+    try:
+        from browser_use.browser.profile import BrowserProfile  # type: ignore
+    except ImportError:
+        return None
+
+    class CompatibleBrowserProfile(BrowserProfile):  # type: ignore[misc, valid-type]
+        def kwargs_for_launch_persistent_context(self) -> _FilteredModelDump:
+            return _FilteredModelDump(
+                super().kwargs_for_launch_persistent_context(),
+                _UNSUPPORTED_PLAYWRIGHT_LAUNCH_KWARGS,
+            )
+
+        def kwargs_for_launch(self) -> _FilteredModelDump:
+            return _FilteredModelDump(
+                super().kwargs_for_launch(),
+                _UNSUPPORTED_PLAYWRIGHT_LAUNCH_KWARGS,
+            )
+
+    return CompatibleBrowserProfile(headless=headless)
+
+
 def _build_openai_compatible_llm(
     *,
     model: str,
@@ -548,3 +620,43 @@ def _history_summary(history: Any) -> str:
             text = str(value)
             return f"agent:{attr}={text[:200]}"
     return "agent:completed"
+
+
+def _write_history_screenshot(
+    history: Any, screenshot_path: Path, notes: list[str]
+) -> None:
+    screenshots = []
+    candidate = getattr(history, "screenshots", None)
+    if candidate is None:
+        return
+    try:
+        screenshots = candidate() if callable(candidate) else candidate
+    except Exception:
+        return
+    for screenshot in reversed(screenshots or []):
+        if not screenshot:
+            continue
+        try:
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(base64.b64decode(str(screenshot)))
+            notes.append("Captured final screenshot from browser-use history.")
+            return
+        except Exception:
+            continue
+
+
+def _is_placeholder_png(path: Path) -> bool:
+    dimensions = _png_dimensions(path)
+    return bool(dimensions and dimensions[0] <= 1 and dimensions[1] <= 1)
+
+
+def _png_dimensions(path: Path) -> tuple[int, int] | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    return width, height

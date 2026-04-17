@@ -64,11 +64,15 @@ class Settings:
     browser_use_llm_provider: str
     browser_use_llm_model: str
     browser_use_max_steps: int
+    browser_headless: bool
 
     # Visual assertion (VLM)
     vlm_provider: str
     vlm_model: str
     assertion_warning_threshold: float
+
+    # Pacing
+    inter_test_delay_seconds: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -90,16 +94,21 @@ class Settings:
             report_dir=Path(
                 os.getenv("TEST_AGENT_REPORT_DIR", data_dir / "reports")
             ).resolve(),
-            max_project_concurrency=int(os.getenv("TEST_AGENT_PROJECT_CONCURRENCY", "3")),
+            max_project_concurrency=int(os.getenv("TEST_AGENT_PROJECT_CONCURRENCY", "1")),
             default_timeout_seconds=int(os.getenv("TEST_AGENT_TIMEOUT_SECONDS", "60")),
             workspace_root=workspace_root,
             browser_use_llm_provider=os.getenv("TEST_AGENT_BROWSER_USE_PROVIDER", "glm").lower(),
             browser_use_llm_model=os.getenv("TEST_AGENT_BROWSER_USE_MODEL", "glm-5.1"),
             browser_use_max_steps=int(os.getenv("TEST_AGENT_BROWSER_USE_MAX_STEPS", "20")),
+            browser_headless=os.getenv("TEST_AGENT_BROWSER_HEADLESS", "false").strip().lower()
+            in {"1", "true", "yes", "on"},
             vlm_provider=os.getenv("TEST_AGENT_VLM_PROVIDER", "glm").lower(),
             vlm_model=os.getenv("TEST_AGENT_VLM_MODEL", "glm-5v-turbo"),
             assertion_warning_threshold=float(
                 os.getenv("TEST_AGENT_ASSERTION_WARNING_THRESHOLD", "0.6")
+            ),
+            inter_test_delay_seconds=float(
+                os.getenv("TEST_AGENT_INTER_TEST_DELAY_SECONDS", "5")
             ),
         )
 

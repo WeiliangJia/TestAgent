@@ -8,6 +8,7 @@ import uuid
 from app.api.schemas import TestRunRequest
 from app.config import Settings
 from app.core.bdd_generator import BDDGenerator
+from app.core.ledger_processor import LedgerProcessor
 from app.core.prd_processor import PRDProcessor
 from app.core.report_generator import ReportGenerator
 from app.core.test_case_generator import TestCaseGenerator
@@ -25,6 +26,7 @@ class Orchestrator:
         self.memory = MemorySystem(sqlite_path=settings.sqlite_path)
         self.memory.initialize()
         self.prd_processor = PRDProcessor(settings)
+        self.ledger_processor = LedgerProcessor(settings)
         self.bdd_generator = BDDGenerator()
         self.test_case_generator = TestCaseGenerator()
         self.semaphore_registry = ProjectSemaphoreRegistry(
@@ -49,7 +51,7 @@ class Orchestrator:
             request.project_id,
             test_id,
             request.target_url,
-            request.user_story_id,
+            request.user_story_id or "(from ledger)",
         )
         return test_id
 
@@ -65,7 +67,7 @@ class Orchestrator:
                 "Starting test run project_id=%s test_id=%s user_story=%s",
                 request.project_id,
                 test_id,
-                request.user_story_id,
+                request.user_story_id or "(from ledger)",
             )
             self.store.update_run(
                 project_id=request.project_id, test_id=test_id, status="running"
@@ -75,9 +77,19 @@ class Orchestrator:
                 prd_content=request.prd_content,
                 prd_path=request.prd_path,
             )
-            requirement, story = self.prd_processor.select_story(
-                document, request.user_story_id
+            ledger = self.ledger_processor.load(
+                ledger_json=request.ledger_json,
+                ledger_content=request.ledger_content,
+                ledger_path=request.ledger_path,
             )
+            story_id = self.ledger_processor.select_story_id(
+                ledger, override=request.user_story_id
+            ) if ledger is not None else request.user_story_id
+            if not story_id:
+                raise ValueError(
+                    "Unable to determine user story: no override and no open entry in ledger."
+                )
+            requirement, story = self.prd_processor.select_story(document, story_id)
             rtm = self.prd_processor.build_rtm(requirement, story)
             bdd_story = self.bdd_generator.generate_for_story(requirement, story)
             test_cases = self.test_case_generator.generate_for_story(
@@ -122,6 +134,24 @@ class Orchestrator:
                 credentials=request.credentials,
                 runtime=runtime,
             )
+            if ledger is not None:
+                entry = self.ledger_processor.update_after_run(
+                    ledger,
+                    test_id=test_id,
+                    story=story,
+                    test_cases=test_cases,
+                    results=results,
+                )
+                try:
+                    self.ledger_processor.save(ledger)
+                except ValueError as exc:
+                    LOGGER.warning(
+                        "Ledger update computed but not persisted (no path): %s", exc
+                    )
+                runtime.record(
+                    f"Ledger updated: {story.story_id} → {entry.status} "
+                    f"(retry={entry.retry_count})"
+                )
             report = self.report_generator.generate(
                 project_id=request.project_id,
                 test_id=test_id,
