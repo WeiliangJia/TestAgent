@@ -27,16 +27,89 @@ class LayerVerdict:
 
 
 class VLMClient:
-    """Layer 2 visual assertion interface.
+    """VLM-backed assertion interface.
 
-    Given an expected outcome and a screenshot path, call a real vision-capable
-    model and return a verdict.
+    Two call sites:
+    - ``assert_functional``: Layer 1 — does the screenshot match the expected outcome?
+    - ``assert_visual``:     Layer 2 — is the rendered UI free of layout defects?
+
+    Both take a screenshot and return a LayerVerdict. Implementations may share
+    transport but MUST use different prompts because the questions differ.
     """
 
     def assert_visual(
         self, *, expected: str, screenshot_path: str | None
     ) -> LayerVerdict:
         raise NotImplementedError
+
+    def assert_functional(
+        self,
+        *,
+        expected: str,
+        screenshot_path: str | None,
+        dom_hint: str = "",
+        console_errors: list[str] | None = None,
+    ) -> LayerVerdict:
+        """Default shim delegates to assert_visual with a functional prompt.
+
+        Subclasses can override to tailor the prompt or model choice; the base
+        implementation keeps provider code compact.
+        """
+        prompt = _build_functional_prompt(
+            expected=expected,
+            dom_hint=dom_hint,
+            console_errors=console_errors or [],
+        )
+        return _call_with_prompt(self, prompt=prompt, screenshot_path=screenshot_path)
+
+
+def _call_with_prompt(
+    client: "VLMClient", *, prompt: str, screenshot_path: str | None
+) -> LayerVerdict:
+    """Route through the concrete client's transport by re-using assert_visual.
+
+    Each provider's assert_visual builds its own prompt internally from
+    ``_build_prompt``. To inject a different prompt without duplicating all
+    three provider classes, we temporarily swap the builder. This is a small
+    hack justified by keeping provider classes unchanged.
+    """
+    import app.integrations.vlm_client as mod
+
+    original = mod._build_prompt
+    mod._build_prompt = lambda _expected: prompt
+    try:
+        return client.assert_visual(expected="", screenshot_path=screenshot_path)
+    finally:
+        mod._build_prompt = original
+
+
+def _build_functional_prompt(
+    *, expected: str, dom_hint: str, console_errors: list[str]
+) -> str:
+    dom_line = (
+        f"\nDOM excerpt (auxiliary, may be partial):\n{dom_hint[:1200]}"
+        if dom_hint
+        else ""
+    )
+    console_line = (
+        "\nConsole errors observed: " + "; ".join(console_errors[:5])
+        if console_errors
+        else ""
+    )
+    return (
+        "You are a functional QA assistant verifying an E2E test screenshot "
+        "from the perspective of a non-technical end user.\n"
+        f"Expected outcome: {expected}\n"
+        "Decide ONLY whether the expected outcome is visible on the page. "
+        "Ignore visual polish; a rough-looking page that still shows the "
+        "expected content is PASSED. Fail if the page shows a 4xx/5xx error, "
+        "a blank page, an error dialog, or if the expected outcome is clearly "
+        "absent."
+        f"{dom_line}{console_line}\n\n"
+        "Answer ONLY with strict JSON in this shape:\n"
+        '{"verdict":"passed|failed|warning","confidence":0.0-1.0,'
+        '"errors":["..."],"visual_issues":[],"rationale":"one sentence"}'
+    )
 
 
 def build_vlm_client(provider: str, model: str | None = None) -> VLMClient:
@@ -196,39 +269,29 @@ class GLMVLMClient(VLMClient):
         )
         client = OpenAI(api_key=api_key, base_url=base_url)
 
-        text = ""
-        for attempt, max_tokens in enumerate((500, 1200), start=1):
-            try:
-                completion = _create_glm_completion(
-                    client=client,
-                    model=self.model,
-                    expected=expected,
-                    screenshot_path=screenshot_path,
-                    max_tokens=max_tokens,
-                )
-                text = _extract_completion_text(completion)
-            except Exception as exc:  # pragma: no cover - network dependent
-                LOGGER.exception("GLM visual assertion failed on attempt %d", attempt)
-                return LayerVerdict(
-                    status="warning",
-                    confidence=0.3,
-                    visual_issues=[f"VLM call failed: {type(exc).__name__}"],
-                    rationale=str(exc)[:200],
-                )
-            if text.strip():
-                break
-            LOGGER.warning(
-                "GLM visual assertion returned empty text on attempt %d "
-                "(max_tokens=%d); retrying with more room",
-                attempt,
-                max_tokens,
+        try:
+            completion = _create_glm_completion(
+                client=client,
+                model=self.model,
+                expected=expected,
+                screenshot_path=screenshot_path,
+                max_tokens=1200,
+            )
+            text = _extract_completion_text(completion)
+        except Exception as exc:  # pragma: no cover - network dependent
+            LOGGER.exception("GLM visual assertion failed")
+            return LayerVerdict(
+                status="warning",
+                confidence=0.3,
+                visual_issues=[f"VLM call failed: {type(exc).__name__}"],
+                rationale=str(exc)[:200],
             )
 
         if not text.strip():
             return LayerVerdict(
                 status="warning",
                 confidence=0.4,
-                visual_issues=["VLM returned an empty response after retry."],
+                visual_issues=["VLM returned an empty response."],
                 rationale="empty-response",
             )
         return _parse_verdict(text)

@@ -43,6 +43,23 @@ def _configure_logging() -> None:
     )
 
 
+def _parse_project_keys(raw: str | None) -> dict[str, str]:
+    """Parse ``PROJECT_KEYS=carsage:key-abc,other:key-xyz`` into {api_key: project_id}."""
+    if not raw:
+        return {}
+    mapping: dict[str, str] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if ":" not in pair:
+            continue
+        project_id, api_key = pair.split(":", 1)
+        project_id = project_id.strip()
+        api_key = api_key.strip()
+        if project_id and api_key:
+            mapping[api_key] = project_id
+    return mapping
+
+
 _load_env_file()
 _configure_logging()
 
@@ -51,6 +68,7 @@ _configure_logging()
 class Settings:
     app_name: str
     api_key: str | None
+    project_keys: dict[str, str]
     execution_mode: str
     sqlite_path: Path
     screenshot_dir: Path
@@ -74,6 +92,9 @@ class Settings:
     # Pacing
     inter_test_delay_seconds: float
 
+    # Execution toggles
+    skip_visual_tests: bool
+
     @classmethod
     def from_env(cls) -> "Settings":
         workspace_root = Path(os.getenv("TEST_AGENT_WORKSPACE", Path.cwd())).resolve()
@@ -81,6 +102,7 @@ class Settings:
         return cls(
             app_name=os.getenv("TEST_AGENT_APP_NAME", "Test Agent"),
             api_key=os.getenv("TEST_AGENT_API_KEY") or None,
+            project_keys=_parse_project_keys(os.getenv("PROJECT_KEYS")),
             execution_mode=os.getenv("TEST_AGENT_EXECUTION_MODE", "browser_use").lower(),
             sqlite_path=Path(
                 os.getenv("TEST_AGENT_SQLITE_PATH", data_dir / "test_agent.sqlite")
@@ -95,7 +117,7 @@ class Settings:
                 os.getenv("TEST_AGENT_REPORT_DIR", data_dir / "reports")
             ).resolve(),
             max_project_concurrency=int(os.getenv("TEST_AGENT_PROJECT_CONCURRENCY", "1")),
-            default_timeout_seconds=int(os.getenv("TEST_AGENT_TIMEOUT_SECONDS", "60")),
+            default_timeout_seconds=int(os.getenv("TEST_AGENT_TIMEOUT_SECONDS", "180")),
             workspace_root=workspace_root,
             browser_use_llm_provider=os.getenv("TEST_AGENT_BROWSER_USE_PROVIDER", "glm").lower(),
             browser_use_llm_model=os.getenv("TEST_AGENT_BROWSER_USE_MODEL", "glm-5.1"),
@@ -110,6 +132,9 @@ class Settings:
             inter_test_delay_seconds=float(
                 os.getenv("TEST_AGENT_INTER_TEST_DELAY_SECONDS", "5")
             ),
+            skip_visual_tests=os.getenv(
+                "TEST_AGENT_SKIP_VISUAL_TESTS", "true"
+            ).strip().lower() in {"1", "true", "yes", "on"},
         )
 
     def ensure_dirs(self) -> None:

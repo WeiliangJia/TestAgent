@@ -134,6 +134,7 @@ class Orchestrator:
                 credentials=request.credentials,
                 runtime=runtime,
             )
+            ledger_delta: dict | None = None
             if ledger is not None:
                 entry = self.ledger_processor.update_after_run(
                     ledger,
@@ -148,6 +149,9 @@ class Orchestrator:
                     LOGGER.warning(
                         "Ledger update computed but not persisted (no path): %s", exc
                     )
+                ledger_delta = self.ledger_processor.story_delta(
+                    ledger, story.story_id
+                )
                 runtime.record(
                     f"Ledger updated: {story.story_id} → {entry.status} "
                     f"(retry={entry.retry_count})"
@@ -163,6 +167,7 @@ class Orchestrator:
                 bdd_story=bdd_story,
                 test_cases=test_cases,
                 results=results,
+                ledger_delta=ledger_delta,
             )
 
             self.memory.l1.remember_run(

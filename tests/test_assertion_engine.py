@@ -50,5 +50,7 @@ def test_placeholder_screenshot_fails_functional_assertion(tmp_path: Path) -> No
     )
 
     assert result.status == "failed"
-    assert "Browser execution did not capture a real screenshot." in result.errors
+    assert any(
+        "did not capture a real screenshot" in err for err in result.errors
+    )
     assert "Functional: placeholder-screenshot" in result.visual_issues

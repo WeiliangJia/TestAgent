@@ -15,8 +15,19 @@ from app.models.test_case import TestCase, UserStory
 LOGGER = logging.getLogger(__name__)
 
 _STUCK_RETRY_THRESHOLD = 3
-_OPEN_STATUSES = {"not_implemented", "failing", "warning"}
-_STATUS_ORDER = ("failing", "warning", "not_implemented", "passing")
+# Canonical enum per sage-loop-ledger-v1.
+STATUS_PASSING = "implemented_passing"
+STATUS_BROKEN = "implemented_broken"
+STATUS_NOT_IMPLEMENTED = "not_implemented"
+_OPEN_STATUSES = {STATUS_NOT_IMPLEMENTED, STATUS_BROKEN}
+_STATUS_ORDER = (STATUS_BROKEN, STATUS_NOT_IMPLEMENTED, STATUS_PASSING)
+
+# Legacy statuses from older ledgers; normalized on load.
+_LEGACY_STATUS_ALIASES = {
+    "passing": STATUS_PASSING,
+    "failing": STATUS_BROKEN,
+    "warning": STATUS_BROKEN,
+}
 
 
 class LedgerProcessor:
@@ -26,7 +37,7 @@ class LedgerProcessor:
     1. explicit override (user_story_id from .env / CLI / API)
     2. ledger.cursor if still open (not passing)
     3. first not_implemented entry
-    4. first failing entry
+    4. first implemented_broken entry
     5. fall back to first entry
     """
 
@@ -43,10 +54,10 @@ class LedgerProcessor:
         if ledger_json is not None:
             if not isinstance(ledger_json, dict):
                 raise ValueError("ledger_json must be a JSON object.")
-            return LedgerDocument.from_dict(ledger_json)
+            return _normalize(LedgerDocument.from_dict(ledger_json))
 
         if ledger_content and ledger_content.strip():
-            return LedgerDocument.from_dict(_loads(ledger_content))
+            return _normalize(LedgerDocument.from_dict(_loads(ledger_content)))
 
         if not ledger_path:
             return None
@@ -56,7 +67,7 @@ class LedgerProcessor:
             raise FileNotFoundError(f"Ledger file not found: {resolved}")
         LOGGER.info("Loading ledger JSON from %s", resolved)
         raw = _loads(resolved.read_text(encoding="utf-8"))
-        return LedgerDocument.from_dict(raw, source_path=str(resolved))
+        return _normalize(LedgerDocument.from_dict(raw, source_path=str(resolved)))
 
     def select_story_id(
         self, ledger: LedgerDocument, *, override: str | None
@@ -77,8 +88,10 @@ class LedgerProcessor:
                     return story_id
 
         for target_status in _STATUS_ORDER:
+            if target_status == STATUS_PASSING:
+                continue
             for story_id, entry in ledger.entries.items():
-                if entry.status == target_status and target_status != "passing":
+                if entry.status == target_status:
                     LOGGER.info(
                         "Ledger selected story %s (status=%s)", story_id, target_status
                     )
@@ -113,6 +126,10 @@ class LedgerProcessor:
             if tc is None:
                 continue
             ac = entry.ac_results.setdefault(tc.ac_id, LedgerACResult())
+            # Skipped ACs retain their prior state so we don't overwrite a known
+            # passing AC with not_implemented just because this run skipped UI.
+            if result.status == "skipped":
+                continue
             ac.status = _ac_status_from_result(result.status)
             ac.last_checked = now
             ac.evidence = _first_screenshot(result)
@@ -125,8 +142,8 @@ class LedgerProcessor:
         entry.checked_by_run = test_id
         entry.summary = _summary_for(aggregate, entry.ac_results.values())
 
-        if aggregate == "failing":
-            if previous_status == "failing":
+        if aggregate == STATUS_BROKEN:
+            if previous_status == STATUS_BROKEN:
                 entry.retry_count += 1
             else:
                 entry.retry_count = 1
@@ -157,6 +174,24 @@ class LedgerProcessor:
         LOGGER.info("Saved ledger to %s", target)
         return target
 
+    def story_delta(self, ledger: LedgerDocument, story_id: str) -> dict[str, Any]:
+        """Emit a compact view of one story's ledger entry for reporting."""
+        entry = ledger.entries.get(story_id)
+        if entry is None:
+            return {"storyId": story_id, "status": STATUS_NOT_IMPLEMENTED, "acResults": {}}
+        return {
+            "storyId": story_id,
+            "status": entry.status,
+            "summary": entry.summary,
+            "lastChecked": entry.last_checked,
+            "checkedByRun": entry.checked_by_run,
+            "retryCount": entry.retry_count,
+            "stuckReason": entry.stuck_reason,
+            "acResults": {
+                ac_id: ac.to_dict() for ac_id, ac in entry.ac_results.items()
+            },
+        }
+
     def _resolve_path(self, raw: str) -> Path:
         path = Path(raw)
         if not path.is_absolute():
@@ -174,24 +209,30 @@ def _loads(text: str) -> dict[str, Any]:
     return data
 
 
+def _normalize(ledger: LedgerDocument) -> LedgerDocument:
+    """Convert legacy ``passing/failing/warning`` statuses to v1 canonical enum."""
+    for entry in ledger.entries.values():
+        entry.status = _LEGACY_STATUS_ALIASES.get(entry.status, entry.status)
+        for ac in entry.ac_results.values():
+            ac.status = _LEGACY_STATUS_ALIASES.get(ac.status, ac.status)
+    return ledger
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _cursor_matches(cursor: str, story_id: str) -> bool:
-    # Cursor may be a requirement id (e.g. "R-01") or a full story id.
     return story_id == cursor or story_id.startswith(cursor + ".")
 
 
 def _ac_status_from_result(status: str) -> str:
     status = (status or "").lower()
     if status == "passed":
-        return "passing"
-    if status == "failed":
-        return "failing"
-    if status == "warning":
-        return "warning"
-    return "not_implemented"
+        return STATUS_PASSING
+    if status in {"failed", "warning", "timeout"}:
+        return STATUS_BROKEN
+    return STATUS_NOT_IMPLEMENTED
 
 
 def _first_screenshot(result: TestCaseResult) -> str | None:
@@ -204,32 +245,52 @@ def _first_screenshot(result: TestCaseResult) -> str | None:
 def _failure_reason(result: TestCaseResult) -> str | None:
     if result.status == "passed":
         return None
+
+    parts: list[str] = []
+    analysis = result.failure_analysis
+    if analysis is not None:
+        parts.append(f"[{analysis.category}]")
+        if analysis.root_cause:
+            parts.append(analysis.root_cause)
+    elif result.failure_type:
+        parts.append(f"[{result.failure_type}]")
+
     if result.errors:
-        return result.errors[0][:400]
-    if result.visual_issues:
-        return result.visual_issues[0][:400]
-    return None
+        primary = result.errors[0]
+        if not parts or primary not in parts[-1]:
+            parts.append(primary)
+    elif result.visual_issues:
+        parts.append(result.visual_issues[0])
+
+    functional = result.functional_result
+    if functional is not None and functional.rationale:
+        if not parts or functional.rationale not in parts[-1]:
+            parts.append(f"VLM: {functional.rationale}")
+
+    if result.confidence is not None:
+        parts.append(f"confidence={result.confidence:.2f}")
+
+    text = " — ".join(part.strip() for part in parts if part and part.strip())
+    return text[:800] if text else None
 
 
 def _aggregate_status(ac_results: Iterable[LedgerACResult]) -> str:
     statuses = [ac.status for ac in ac_results]
     if not statuses:
-        return "not_implemented"
-    if any(s == "failing" for s in statuses):
-        return "failing"
-    if all(s == "passing" for s in statuses):
-        return "passing"
-    if any(s == "warning" for s in statuses):
-        return "warning"
-    return "not_implemented"
+        return STATUS_NOT_IMPLEMENTED
+    if any(s == STATUS_BROKEN for s in statuses):
+        return STATUS_BROKEN
+    if all(s == STATUS_PASSING for s in statuses):
+        return STATUS_PASSING
+    return STATUS_NOT_IMPLEMENTED
 
 
 def _summary_for(aggregate: str, ac_results: Iterable[LedgerACResult]) -> str:
     results = list(ac_results)
     total = len(results)
-    passing = sum(1 for ac in results if ac.status == "passing")
-    failing = sum(1 for ac in results if ac.status == "failing")
-    return f"{aggregate}: {passing}/{total} AC passing, {failing} failing"
+    passing = sum(1 for ac in results if ac.status == STATUS_PASSING)
+    broken = sum(1 for ac in results if ac.status == STATUS_BROKEN)
+    return f"{aggregate}: {passing}/{total} AC passing, {broken} broken"
 
 
 def _advance_cursor(ledger: LedgerDocument) -> str | None:

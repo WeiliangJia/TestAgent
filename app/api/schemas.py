@@ -13,7 +13,7 @@ class Credentials(BaseModel):
 
 
 class TestRunRequest(BaseModel):
-    project_id: str = Field(..., min_length=1, alias="projectId")
+    project_id: str | None = Field(default=None, alias="projectId")
     target_url: str = Field(..., min_length=1, alias="targetUrl")
     user_story_id: str | None = Field(default=None, alias="userStoryId")
     prd_json: dict[str, Any] | None = Field(default=None, alias="prdJson")

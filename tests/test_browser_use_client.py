@@ -198,6 +198,7 @@ def _settings_for(root: Path, *, provider: str) -> Settings:
     return Settings(
         app_name="Test Agent",
         api_key=None,
+        project_keys={},
         execution_mode="browser_use",
         sqlite_path=data_dir / "test_agent.sqlite",
         screenshot_dir=data_dir / "screenshots",
@@ -209,7 +210,10 @@ def _settings_for(root: Path, *, provider: str) -> Settings:
         browser_use_llm_provider=provider,
         browser_use_llm_model="glm-5.1",
         browser_use_max_steps=20,
+        browser_headless=True,
         vlm_provider="glm",
         vlm_model="glm-5v-turbo",
         assertion_warning_threshold=0.6,
+        inter_test_delay_seconds=0.0,
+        skip_visual_tests=True,
     )

@@ -247,24 +247,62 @@ def _print_summary(row: dict, user_story_id: str) -> None:
     report = row.get("report") or {}
     summary = report.get("summary") or {}
     print("")
-    print("Test Agent run finished")
+    print("=== Test Report ===")
     print(f"  user_story: {user_story_id}")
     print(f"  status: {row.get('status')}")
     print(f"  test_id: {row.get('test_id')}")
     print(f"  project_id: {row.get('project_id')}")
     if summary:
         print(
-            "  summary: "
+            "  overall: "
             f"{summary.get('passed', 0)} passed, "
             f"{summary.get('failed', 0)} failed, "
             f"{summary.get('warnings', 0)} warnings, "
+            f"{summary.get('skipped', 0)} skipped, "
             f"{summary.get('total', 0)} total"
+        )
+        print(
+            "  functional: "
+            f"{summary.get('functionalPassed', 0)} passed, "
+            f"{summary.get('functionalFailed', 0)} failed, "
+            f"{summary.get('functionalSkipped', 0)} skipped"
+        )
+        print(
+            "  ui: "
+            f"{summary.get('uiPassed', 0)} passed, "
+            f"{summary.get('uiWarning', 0)} warning, "
+            f"{summary.get('uiFailed', 0)} failed, "
+            f"{summary.get('uiSkipped', 0)} skipped"
         )
     if report.get("reportPath"):
         print(f"  report: {report['reportPath']}")
     if row.get("error"):
         print(f"  error: {row['error']}")
+    _print_ledger_delta(report.get("ledgerUpdate"))
     print("")
+
+
+def _print_ledger_delta(delta: dict | None) -> None:
+    if not delta:
+        return
+    print("")
+    print("=== Ledger Update ===")
+    print(f"  story: {delta.get('storyId')}")
+    print(f"  status: {delta.get('status')}")
+    if delta.get("summary"):
+        print(f"  summary: {delta['summary']}")
+    if delta.get("retryCount"):
+        print(f"  retryCount: {delta['retryCount']}")
+    if delta.get("stuckReason"):
+        print(f"  stuckReason: {delta['stuckReason']}")
+    ac_results = delta.get("acResults") or {}
+    if ac_results:
+        print("  acResults:")
+        for ac_id, ac in ac_results.items():
+            status = ac.get("status", "")
+            reason = ac.get("failureReason")
+            tail = f" — {reason}" if reason else ""
+            print(f"    - {ac_id}: {status}{tail}")
 
 
 def _terminal_report_summary(row: dict, user_story_id: str) -> dict:
@@ -292,6 +330,7 @@ def _terminal_report_summary(row: dict, user_story_id: str) -> dict:
         },
         "summary": summary,
         "results": [_terminal_result_summary(item) for item in results],
+        "ledgerUpdate": report.get("ledgerUpdate"),
         "reportPath": report.get("reportPath"),
         "error": row.get("error"),
     }

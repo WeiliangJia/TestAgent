@@ -45,7 +45,7 @@ class TestCaseGenerator:
                     ac_id=criterion.ac_id,
                     story=bdd_story.gherkin,
                     expected=expected,
-                    test_type=criterion.test_type,
+                    test_type=(criterion.test_type or "integration").strip() or "integration",
                     steps=steps,
                 )
             )
