@@ -216,4 +216,6 @@ def _settings_for(root: Path, *, provider: str) -> Settings:
         assertion_warning_threshold=0.6,
         inter_test_delay_seconds=0.0,
         skip_visual_tests=True,
+        analyzer_low_confidence_threshold=0.5,
+        analyzer_aggregation_min_cases=2,
     )

@@ -88,12 +88,16 @@ class FailureAnalysis:
     category: str
     root_cause: str
     evidence: list[str] = field(default_factory=list)
+    contributing: list[dict[str, Any]] = field(default_factory=list)
+    scores: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "category": self.category,
             "rootCause": self.root_cause,
             "evidence": list(self.evidence),
+            "contributing": [dict(item) for item in self.contributing],
+            "scores": dict(self.scores),
         }
 
 

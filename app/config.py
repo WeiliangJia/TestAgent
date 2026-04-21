@@ -95,6 +95,10 @@ class Settings:
     # Execution toggles
     skip_visual_tests: bool
 
+    # Failure analyzer
+    analyzer_low_confidence_threshold: float
+    analyzer_aggregation_min_cases: int
+
     @classmethod
     def from_env(cls) -> "Settings":
         workspace_root = Path(os.getenv("TEST_AGENT_WORKSPACE", Path.cwd())).resolve()
@@ -135,6 +139,12 @@ class Settings:
             skip_visual_tests=os.getenv(
                 "TEST_AGENT_SKIP_VISUAL_TESTS", "true"
             ).strip().lower() in {"1", "true", "yes", "on"},
+            analyzer_low_confidence_threshold=float(
+                os.getenv("TEST_AGENT_ANALYZER_LOW_CONFIDENCE", "0.5")
+            ),
+            analyzer_aggregation_min_cases=int(
+                os.getenv("TEST_AGENT_ANALYZER_AGGREGATION_MIN_CASES", "2")
+            ),
         )
 
     def ensure_dirs(self) -> None:

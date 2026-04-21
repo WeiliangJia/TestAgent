@@ -52,7 +52,10 @@ class TestRunner:
             warning_threshold=settings.assertion_warning_threshold,
             skip_visual=settings.skip_visual_tests,
         )
-        self.analyzer = LightweightAnalyzer()
+        self.analyzer = LightweightAnalyzer(
+            low_confidence_threshold=settings.analyzer_low_confidence_threshold,
+            aggregation_min_cases=settings.analyzer_aggregation_min_cases,
+        )
         self.semaphore_registry = semaphore_registry
 
     async def run_all(
@@ -89,7 +92,9 @@ class TestRunner:
             )
             for test_case in test_cases
         ]
-        return await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks)
+        self.analyzer.aggregate_run(results)
+        return results
 
     async def _run_one(
         self,
@@ -153,6 +158,7 @@ class TestRunner:
                     test_case=test_case,
                     timeout=timeout,
                     target_url=target_url,
+                    analyzer=self.analyzer,
                 )
 
     async def _execute_case(
@@ -279,7 +285,11 @@ def _skipped_visual_result(*, test_case: TestCase) -> TestCaseResult:
 
 
 def _timeout_result(
-    *, test_case: TestCase, timeout: int, target_url: str
+    *,
+    test_case: TestCase,
+    timeout: int,
+    target_url: str,
+    analyzer: LightweightAnalyzer,
 ) -> TestCaseResult:
     expected = (test_case.expected or "").strip()
     first_step = ""
@@ -300,12 +310,15 @@ def _timeout_result(
         current_url=target_url,
         notes=[message],
     )
+    failure_analysis = analyzer.classify_timeout(
+        test_case=test_case, message=message, target_url=target_url
+    )
     return TestCaseResult(
         test_case_id=test_case.test_case_id,
         req_id=test_case.req_id,
         story=test_case.story,
         status="failed",
-        failure_type="environment_error",
+        failure_type=failure_analysis.category,
         confidence=0.0,
         steps=[step],
         errors=[message],
@@ -317,5 +330,5 @@ def _timeout_result(
             errors=[message],
         ),
         ui_result=UIResult(result="SKIPPED", rationale="UI layer not reached"),
-        failure_analysis=None,
+        failure_analysis=failure_analysis,
     )

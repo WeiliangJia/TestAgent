@@ -84,6 +84,8 @@ Every run targets exactly one user story, identified by its id
 | `TEST_AGENT_VLM_PROVIDER` | `openai` \| `anthropic` \| `glm` (default `glm`) |
 | `TEST_AGENT_VLM_MODEL` | e.g. `gpt-4o-mini`, `claude-sonnet-4-5`, `glm-5v-turbo` |
 | `TEST_AGENT_ASSERTION_WARNING_THRESHOLD` | Confidence floor below which a passing assertion is downgraded to `warning` (default `0.6`) |
+| `TEST_AGENT_ANALYZER_LOW_CONFIDENCE` | Failure analyzer: confidence below this boosts `test_fragility` (default `0.5`) |
+| `TEST_AGENT_ANALYZER_AGGREGATION_MIN_CASES` | Failure analyzer: min number of cases sharing a signal before cross-case escalation kicks in (default `2`) |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Consumed by the SDKs for both browser-use driver and VLM |
 | `ZAI_API_KEY` | Z.ai / ZhipuAI API key for GLM browser-use planning and visual assertions |
 | `ZAI_BASE_URL` | Optional GLM OpenAI-compatible API base URL, defaults to `https://api.z.ai/api/paas/v4/` |
@@ -284,6 +286,8 @@ PRD 必须遵循 sage-loop 规范。完整协议见 `docs/`，Agent 解析时关
 | `TEST_AGENT_VLM_PROVIDER` | `openai` \| `anthropic` \| `glm`（默认 `glm`） |
 | `TEST_AGENT_VLM_MODEL` | 如 `gpt-4o-mini`、`claude-sonnet-4-5`、`glm-5v-turbo` |
 | `TEST_AGENT_ASSERTION_WARNING_THRESHOLD` | 置信度阈值，低于此值的 passing 会降级为 `warning`（默认 `0.6`） |
+| `TEST_AGENT_ANALYZER_LOW_CONFIDENCE` | 失败归因：低于此置信度会为 `test_fragility` 加权（默认 `0.5`） |
+| `TEST_AGENT_ANALYZER_AGGREGATION_MIN_CASES` | 失败归因：共享同一信号的用例达到此数量才触发跨用例升级（默认 `2`） |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | browser-use driver 和 VLM 的 SDK 使用 |
 | `ZAI_API_KEY` | Z.ai / 智谱的 API key，用于 GLM 的 browser-use 规划和视觉断言 |
 | `ZAI_BASE_URL` | 可选的 GLM OpenAI 兼容 API base URL，默认 `https://api.z.ai/api/paas/v4/` |
